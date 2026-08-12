@@ -1,3 +1,4 @@
+
 import os
 import itertools
 import glob
@@ -6,21 +7,16 @@ import torch
 import logging
 import numpy as np
 import wandb
-import torchvision.utils as vutils
 from torch.utils import data as torch_data
 from torch.cuda.amp import autocast, GradScaler
 
 from maggie.dataloader import build_dataset
 from maggie.network import build_model
+from maggie.utils.dist import AverageMeter
 from maggie.utils.metric import build_metric
 
-from .optim import build_optim_lr_scheduler, plot_lr_scheduler
+from .optim import build_optim_lr_scheduler
 from .test import eval_image, eval_video
-
-from PIL import Image
-from mmengine.logging import MMLogger, HistoryBuffer
-from torch.utils.tensorboard import SummaryWriter
-
 
 def log_alpha(tensor, tag, index=0, inst_idx=0):
     if tensor.dim() == 5:   # (B, T, N, H, W)
@@ -50,6 +46,10 @@ def wandb_log_image(batch, output, iter):
     log_images = []
     index = batch['image'].shape[1] - 1
     inst_index = 0
+    # if valid_inst_index.sum() > 0:
+    #     inst_index = torch.where(valid_inst_index)[0][0]
+    # import pdb; pdb.set_trace()
+    # image = batch['image'][0,index].cpu()
     image = batch['image'][0].cpu()
     image = image * torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1) + torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     image = (image * 255).permute(1, 2, 0).numpy().astype(np.uint8)
@@ -57,58 +57,49 @@ def wandb_log_image(batch, output, iter):
     
     log_images.append(log_alpha(batch['alpha'], 'alpha_gt', index, inst_index))
     
+    if 'mask' in batch:
+        log_images.append(log_alpha(batch['mask'], 'mask_gt', index, inst_index))
     if 'alpha_pred' in output:
         log_images.append(log_alpha(output['alpha_pred'], 'alpha_pred', index, inst_index))
+    if 'refined_masks' in output:
+        log_images.append(log_alpha(output['refined_masks'], 'alpha_pred', index, inst_index))
+    
+    if 'temp_alpha' in output:
+        log_images.append(log_alpha(output['temp_alpha'], 'alpha_temp_pred', index, inst_index))
+    if 'refined_masks_temp' in output:
+        log_images.append(log_alpha(output['refined_masks_temp'], 'alpha_temp_pred', index, inst_index))
+    
+    if 'transition' in output:
+        log_images.append(log_alpha(batch['transition'], 'trans_gt', index, inst_index))
+    if 'detail_mask' in output:
+        log_images.append(log_alpha(output['detail_mask'], 'trans_pred', index, inst_index))
+    if 'diff_pred' in output:
+        log_images.append(log_alpha(output['diff_pred'], 'diff_pred', index, inst_index))
+    
+    if 'diff_pred_forward' in output:
+        log_images.append(log_alpha(output['diff_pred_forward'], 'forward_diff_pred', index, inst_index))
+    
+    if 'diff_pred_backward' in output:
+        log_images.append(log_alpha(output['diff_pred_backward'], 'backward_diff_pred', index, inst_index))
+    
+    # For VM2M
+    if 'trans_preds' in output:
+        for i, trans_pred in enumerate(output['trans_preds']):
+            log_images.append(log_alpha(trans_pred.sigmoid(), 'transition_pred_' + str(i), index, inst_index))
+        log_images.append(log_alpha(batch['transition'], 'transition_gt', index, inst_index))
 
+    if 'inc_bin_maps' in output:
+        for i, inc_bin_map in enumerate(output['inc_bin_maps']):
+            log_images.append(log_alpha(inc_bin_map, 'inc_bin_map_gt_' + str(i), index, inst_index))
+    
+    # Logging some intermediate results
+    if 'alpha_os1' in output:
+        log_images.append(log_alpha(output['alpha_os1'], 'alpha_os1_pred', index, inst_index))
+    if 'alpha_os4' in output:
+        log_images.append(log_alpha(output['alpha_os4'], 'alpha_os4_pred', index, inst_index))
+    if 'alpha_os8' in output:
+        log_images.append(log_alpha(output['alpha_os8'], 'alpha_os8_pred', index, inst_index))
     wandb.log({"examples/all": log_images}, commit=True)
-
-
-def tensorboard_log_image(batch, output, iter, writer, n_samples=5):
-    if not hasattr(Image, 'ANTIALIAS'):
-        Image.ANTIALIAS = Image.Resampling.LANCZOS
-    
-    images = batch['image']
-    alphas = batch['alpha']
-    
-    n = min(n_samples, images.shape[0])
-    
-    img_list = []
-    alpha_gt_list = []
-    alpha_pred_list = []
-
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-    
-    alpha_pred_out = output.get('alpha_pred', None)
-
-    for i in range(n):
-        img = images[i].cpu()
-        img = img * std + mean
-        img = torch.clamp(img, 0, 1).squeeze(0)
-        img_list.append(img)
-
-        alpha_gt = alphas[i, 0].cpu()
-        alpha_gt = alpha_gt.unsqueeze(0).repeat(3, 1, 1)  # (3, H, W)
-        alpha_gt_list.append(alpha_gt)
-
-        if alpha_pred_out is not None:
-            alpha_pred = alpha_pred_out[i, 0].detach().cpu()
-            alpha_pred = torch.clamp(alpha_pred, 0, 1)
-            alpha_pred = alpha_pred.unsqueeze(0).repeat(3, 1, 1)
-            alpha_pred_list.append(alpha_pred)
-    
-    if alpha_pred_list:
-        grid_img = vutils.make_grid(img_list, nrow=n, pad_value=1)
-        grid_gt = vutils.make_grid(alpha_gt_list, nrow=n, pad_value=1)
-        grid_pred = vutils.make_grid(alpha_pred_list, nrow=n, pad_value=1)
-        final_grid = torch.cat([grid_img, grid_gt, grid_pred], dim=1)
-    else:
-        grid_img = vutils.make_grid(img_list, nrow=n, pad_value=1)
-        grid_gt = vutils.make_grid(alpha_gt_list, nrow=n, pad_value=1)
-        final_grid = torch.cat([grid_img, grid_gt], dim=1)
-
-    writer.add_image('vis/comparison', final_grid, global_step=iter)
-    
 
 def load_state_dict(model, state_dict):
     current_state_dict = model.state_dict()
@@ -150,25 +141,6 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
         global_rank = rank
     
     device = f'cuda:{rank}'
-    
-    log_file = os.path.join(cfg.output_dir, 'train.log')
-    logger = MMLogger.get_instance('matting', log_file=log_file, log_level='INFO')
-    
-    scalar_writer = None
-    image_writer = None
-    if global_rank == 0:
-        tb_root = os.path.join(cfg.output_dir, 'tensorboard')
-
-        scalar_dir = os.path.join(tb_root, 'scalars')
-        os.makedirs(scalar_dir, exist_ok=True)
-        scalar_writer = SummaryWriter(log_dir=scalar_dir)
-        
-        image_dir = os.path.join(tb_root, 'images')
-        os.makedirs(image_dir, exist_ok=True)
-        image_writer = SummaryWriter(log_dir=image_dir)
-        
-        logger.info(f"Scalar logs will be saved to {scalar_dir}")
-        logger.info(f"Image logs will be saved to {image_dir}")
 
     # Create dataset
     logging.info("Creating train dataset...")
@@ -207,8 +179,6 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
     # Define optimizer and lr scheduler
     logging.info("Building optimizer and lr scheduler...")
     optimizer, lr_scheduler = build_optim_lr_scheduler(cfg, model)
-    
-    plot_lr_scheduler(optimizer, lr_scheduler, total_iters=cfg.train.max_iter, save_dir=cfg.output_dir)
 
     if is_dist:
         if cfg.model.sync_bn:
@@ -243,9 +213,11 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
         else:
             raise ValueError("Cannot resume model from {}".format(model_path))
 
-    loss_buffers = {}
-    batch_time_buffer = HistoryBuffer(max_length=50)
-    data_time_buffer = HistoryBuffer(max_length=50)
+    batch_time = AverageMeter('batch_time')
+    data_time = AverageMeter('data_time')
+    
+    log_metrics = {}
+    end_time = time.time()
 
     # Build validation metrics
     val_error_dict = build_metric(cfg.train.val_metrics)
@@ -260,8 +232,6 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
     scaler = GradScaler() if precision == 16 else None
 
     eval_fn = eval_video if cfg.dataset.test.name == 'VIM' else eval_image
-    
-    end_time = time.time()
     while iter < cfg.train.max_iter:
         
         for _, batch in enumerate(train_loader):
@@ -269,8 +239,7 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
             if is_dist:
                 train_sampler.set_epoch(epoch)
 
-            data_time_val = time.time() - end_time
-            data_time_buffer.update(data_time_val)
+            data_time.update(time.time() - end_time)
 
             iter += 1
             if iter > cfg.train.max_iter:
@@ -291,40 +260,31 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
             # Store to log_metrics
             loss_reduced = loss
             for k, v in loss_reduced.items():
-                if k not in loss_buffers:
-                    loss_buffers[k] = HistoryBuffer(max_length=50)
-                loss_buffers[k].update(v.item())
-            
-            batch_time_val = time.time() - end_time
-            batch_time_buffer.update(batch_time_val)
+                if k not in log_metrics:
+                    log_metrics[k] = AverageMeter(k)
+                log_metrics[k].update(v.item())
             
             # Logging
             if iter % cfg.train.log_iter == 0:
                 log_str = "Epoch: {}, Iter: {}/{}".format(epoch, iter, cfg.train.max_iter)
-                for k, v in loss_buffers.items():
-                    log_str += ", {}: {:.4f}".format(k, v.mean())
+                for k, v in log_metrics.items():
+                    log_str += ", {}: {:.4f}".format(k, v.avg)
                 log_str += ", lr: {:.6f}".format(lr_scheduler.get_last_lr()[0])
-                log_str += ", batch_time: {:.4f}s".format(batch_time_buffer.mean())
-                log_str += ", data_time: {:.4f}s".format(data_time_buffer.mean())
+                log_str += ", batch_time: {:.4f}s".format(batch_time.avg)
+                log_str += ", data_time: {:.4f}s".format(data_time.avg)
 
-                # logging.info(log_str)
-                logger.info(log_str)
-                
-                if scalar_writer is not None:
-                    for k, buf in loss_buffers.items():
-                        scalar_writer.add_scalar(f'train/{k}', buf.mean(), iter)
-                    scalar_writer.add_scalar('train/lr', lr_scheduler.get_last_lr()[0], iter)
-                    scalar_writer.add_scalar('train/batch_time', batch_time_buffer.mean(), iter)
-                    scalar_writer.add_scalar('train/epoch', epoch, iter)
+                logging.info(log_str)
 
             if global_rank == 0 and cfg.wandb.use and iter % cfg.train.log_iter == 0:
-                for k, buf in loss_buffers.items():
-                    wandb.log({"train/" + k: buf.mean()}, commit=False)
+                for k, v in log_metrics.items():
+                    wandb.log({"train/" + k: v.val}, commit=False)
                 wandb.log({"train/lr": lr_scheduler.get_last_lr()[0]}, commit=False)
-                wandb.log({"train/batch_time": batch_time_buffer.mean()}, commit=False)
-                wandb.log({"train/data_time": data_time_buffer.mean()}, commit=False)
+                wandb.log({"train/batch_time": batch_time.val}, commit=False)
+                wandb.log({"train/data_time": data_time.val}, commit=False)
                 wandb.log({"train/epoch": epoch}, commit=False)
                 wandb.log({"train/iter": iter}, commit=True)
+
+            batch_time.update(time.time() - end_time)
 
             if precision == 16:
                 scaler.scale(loss['total']).backward()
@@ -334,9 +294,8 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
             # Clip norm
             if precision == 16:
                 scaler.unscale_(optimizer)
-                
-            all_params = itertools.chain(*[x["params"] for x in optimizer.param_groups])
-            torch.nn.utils.clip_grad_norm_(all_params, 1.0)
+            # all_params = itertools.chain(*[x["params"] for x in optimizer.param_groups])
+            # torch.nn.utils.clip_grad_norm_(all_params, 0.01)
             
             # Update
             if precision == 16:
@@ -348,18 +307,13 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
             lr_scheduler.step()
             
             # Visualization
-            if global_rank == 0 and iter % cfg.train.vis_iter == 0:
-                if cfg.wandb.use:
-                    try:
-                        wandb_log_image(batch, output, iter)
-                    except Exception as e:
-                        logger.warning(f"wandb log image failed: {e}")
-
-                if image_writer is not None:
-                    try:
-                        tensorboard_log_image(batch, output, iter, image_writer, n_samples=5)
-                    except Exception as e:
-                        logger.warning(f"TensorBoard log image failed: {e}")
+            if global_rank == 0 and iter % cfg.train.vis_iter == 0 and cfg.wandb.use:
+                # Visualize to wandb
+                try:
+                    wandb_log_image(batch, output, iter)
+                except Exception as e: 
+                    print(e)
+                    # pass
                 
             # Evaluation
             if iter % cfg.train.val_iter == 0 and (cfg.train.val_dist or (not cfg.train.val_dist and global_rank == 0)):
@@ -388,7 +342,7 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                         best_score = total_error
                         logging.info("Saving best model...")
                         save_path = os.path.join(cfg.output_dir, 'best_model.pth')
-                        with open(os.path.join(cfg.output_dir, "best_metrics.txt"), 'w') as f:
+                        with open(os.path.join(cfg.output_dir,"best_metrics.txt"), 'w') as f:
                             f.write("iter: {}\n".format(iter))
                             for k, v in val_error_dict.items():
                                 f.write("{}: {:.4f}\n".format(k, v.average()))
@@ -400,11 +354,6 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                         wandb.log({"val/epoch": epoch}, commit=False)
                         wandb.log({"val/best_error": best_score}, commit=False)
                         wandb.log({"val/iter": iter}, commit=True)
-                    
-                    if scalar_writer is not None:
-                        for k, v in val_error_dict.items():
-                            scalar_writer.add_scalar(f'val/{k}', v.average(), iter)
-                        scalar_writer.add_scalar('val/best_error', best_score, iter)
                     
                     logging.info("Saving the last model...")
                     save_dict = {
@@ -444,10 +393,3 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                 model.train()
             end_time = time.time()
         epoch += 1
-        
-    if scalar_writer is not None:
-        scalar_writer.close()
-    if image_writer is not None:
-        image_writer.close()
-        
-    logger.info("Training finished.")

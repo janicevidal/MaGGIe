@@ -102,9 +102,8 @@ class RandomCenterCrop(object):
         return input_dict
 
 class ResizeShort(object):
-    def __init__(self, short_size, transform_alphas=True):
+    def __init__(self, short_size):
         self.short_size = short_size
-        self.transform_alphas = transform_alphas
     
     def __call__(self, input_dict: dict):
         frames = input_dict["frames"]
@@ -135,9 +134,8 @@ class ResizeShort(object):
         return input_dict
 
 class PaddingMultiplyBy(object):
-    def __init__(self, divisor=32, transform_alphas=True):
+    def __init__(self, divisor=32):
         self.divisor = divisor
-        self.transform_alphas = transform_alphas
 
     def __call__(self, input_dict: dict):
         frames = input_dict["frames"]
@@ -1031,4 +1029,86 @@ class MotionBlur(object):
         if bg is not None:
             input_dict["bg"] = bg
             input_dict["fg"] = frames
+        return input_dict
+    
+
+class RandomAffineCrop(object):
+    def __init__(self, crop_size, random, p=0.8,
+                 angle_range=(-15, 15), scale_range=(0.8, 1.2), shift_ratio=0.2):
+        """
+        Args:
+            crop_size: tuple (h, w)，输出尺寸
+            random: numpy.random.RandomState 实例
+            p: 触发概率
+            angle_range: 旋转角度范围（度）
+            scale_range: 缩放范围（相对于当前前景尺寸）
+            shift_ratio: 平移幅度占图像尺寸的比例，控制目标在画面中移动范围
+        """
+        self.crop_size = crop_size
+        self.crop_h, self.crop_w = crop_size
+        self.random = random
+        self.p = p
+        self.angle_range = angle_range
+        self.scale_range = scale_range
+        self.shift_ratio = shift_ratio
+
+    def __call__(self, input_dict):
+        frames = input_dict["frames"]
+        alphas = input_dict["alphas"]
+        masks = input_dict.get("masks", None)
+
+        H, W = frames[0].shape[:2]
+        
+        if self.random.rand() > self.p:
+            if H > W:
+                pad_w = (H - W) // 2
+                pad_h = 0
+            else:
+                pad_w = 0
+                pad_h = (W - H) // 2
+            crop_frames = [cv2.copyMakeBorder(frame, pad_h, pad_h, pad_w, pad_w, cv2.BORDER_CONSTANT, value=0) for frame in frames]
+            crop_alphas = [cv2.copyMakeBorder(alpha, pad_h, pad_h, pad_w, pad_w, cv2.BORDER_CONSTANT, value=0) for alpha in alphas]
+            crop_frames = [cv2.resize(frame, self.crop_size, interpolation=cv2.INTER_LINEAR) for frame in crop_frames]
+            crop_alphas = [cv2.resize(alpha, self.crop_size, interpolation=cv2.INTER_LINEAR) for alpha in crop_alphas]
+            crop_frames = np.stack(crop_frames, axis=0)
+            crop_alphas = np.stack(crop_alphas, axis=0)
+            if masks is not None:
+                crop_masks = [cv2.copyMakeBorder(mask, pad_h, pad_h, pad_w, pad_w, cv2.BORDER_CONSTANT, value=0) for mask in masks]
+                crop_masks = np.stack([cv2.resize(mask, self.crop_size, interpolation=cv2.INTER_NEAREST) for mask in crop_masks], axis=0)
+            else:
+                crop_masks = None
+        else:
+            angle = self.random.uniform(self.angle_range[0], self.angle_range[1])
+            scale = self.random.uniform(self.scale_range[0], self.scale_range[1])
+            
+            base_scale = (self.crop_w / W + self.crop_h / H) / 2.0
+            scale *= base_scale
+
+            shift_x = self.random.uniform(-self.shift_ratio, self.shift_ratio) * self.crop_w
+            shift_y = self.random.uniform(-self.shift_ratio, self.shift_ratio) * self.crop_h
+
+            center = (W / 2, H / 2)
+            M = cv2.getRotationMatrix2D(center, angle, scale)
+        
+            src_center = np.array([W / 2, H / 2, 1.0])
+            dst_center = M.dot(src_center)  # 2x1
+            M[0, 2] += (self.crop_w / 2 + shift_x - dst_center[0])
+            M[1, 2] += (self.crop_h / 2 + shift_y - dst_center[1])
+
+            crop_frames = [cv2.warpAffine(frame, M, self.crop_size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0)) for frame in frames]
+            crop_frames = np.stack(crop_frames, axis=0)
+
+            crop_alphas = [cv2.warpAffine(alpha, M, self.crop_size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0) for alpha in alphas]
+            crop_alphas = np.stack(crop_alphas, axis=0)
+
+            if masks is not None:
+                crop_masks = [cv2.warpAffine(mask, M, self.crop_size, flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0) for mask in masks]
+                crop_masks = np.stack(crop_masks, axis=0)
+            else:
+                crop_masks = None
+
+        input_dict["frames"] = crop_frames
+        input_dict["alphas"] = crop_alphas
+        input_dict["masks"] = crop_masks
+
         return input_dict

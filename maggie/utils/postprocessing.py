@@ -56,7 +56,7 @@ def reverse_transform_tensor(img, transform_info):
                 h, w = h.item(), w.item()
             # img = [cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR) for img in img]
             # img = np.stack(img, axis=0)
-            img = F.interpolate(img.unsqueeze(1), size=(h, w), mode='bilinear', align_corners=True).squeeze(1)
+            img = F.interpolate(img.unsqueeze(1), size=(h, w), mode='bilinear').squeeze(1)
             img_shape[-2:] = h, w
 
     img = img.reshape(img_shape)

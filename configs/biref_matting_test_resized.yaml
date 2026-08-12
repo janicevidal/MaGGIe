@@ -1,0 +1,105 @@
+dataset:
+  test:
+    name: Matting
+    root_dir: /data/xiaoshuai/human_matting/val_0729/
+    short_size: 576
+    alpha_dir_name: alphas
+  train:
+    name: Matting
+    root_dir: /data/xiaoshuai/human_matting/train_0729_resized/
+    short_size: 576
+    random_state: 2026
+    crop:
+    - 512
+    - 512
+    padding_crop_p: 0.1
+    flip_p: 0.5
+    gamma_p: 0.5
+    add_noise_p: 0.3
+    jpeg_p: 0.1
+    affine_p: 0.1
+    alpha_dir_name: alphas
+model:
+  arch: BiRefNet
+  # weights: chuonghm/maggie-image-him50k-cvpr24
+  sync_bn: false
+  having_unused_params: false
+  # warmup_iters: 3000
+  encoder: star_matting
+  encoder_args:
+    embed_dims: 20
+    num_layers: [2, 3, 5, 2]
+    prm_ratio: [1, 2, 2, 2]
+    dr_ratio: [1, 2, 2, 4]
+    structure: 'TE'
+  decoder: biref_decoder
+  decoder_args:
+    in_channels: [160, 100, 40, 20]
+    ipt_channels: [48, 48, 32, 16, 8]
+    out_channels: [128, 64, 32, 24]
+    ms_supervision: true
+    dec_ipt: true
+    out_ref: true
+
+  lambdas_pix_last:
+    bce: 30
+    mae: 100
+    ssim: 10
+
+  pix_loss_weight: 1.0
+  gdt_loss_weight: 1.0
+  
+name: biref_matting_16_resized
+output_dir: output/image_resized
+test:
+  batch_size: 1
+  log_iter: 500
+  metrics:
+  - MAD
+  - MSE
+  - SAD
+  - Grad
+  - Conn
+  num_workers: 4
+  postprocessing: false
+  save_dir: output/image/biref_matting_16/vis
+  save_results: false
+train:
+  batch_size: 64
+  log_iter: 10
+  max_iter: 300000
+  num_workers: 16
+  optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    lr: 0.001
+    momentum: 0.9
+    name: adamw
+    weight_decay: 0.01
+  resume: ''
+  resume_last: false
+  scheduler:
+    name: warmup_decay_multi
+    warmup_iters: 1000
+    warmup_factor: 0.001
+    delay_iters: 150000
+    decay_steps: [230000]
+    peak_scale: 0.7
+    eta_min: 0.00001
+  seed: 1234
+  val_best_metric: MAD
+  val_dist: true
+  val_iter: 5000
+  val_metrics:
+  - MAD
+  - MSE
+  - SAD
+  - Grad
+  - Conn
+  vis_iter: 100
+wandb:
+  entity: vidal
+  id: ''
+  project: matting
+  use: true

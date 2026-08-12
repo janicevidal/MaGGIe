@@ -21,6 +21,7 @@ def main(cfg, eval_only=False, precision=32, is_sweep=False):
     # Set up logger
     logFormatter = logging.Formatter("%(asctime)s [rank " + str(global_rank) + "] [%(levelname)-5.5s]  %(message)s")
     rootLogger = logging.getLogger()
+    rootLogger.handlers.clear()
 
     fileHandler = logging.FileHandler("{0}/{1}log_rank{2}.log".format(cfg.output_dir, "test-" if eval_only else "", str(global_rank)))
     fileHandler.setFormatter(logFormatter)
@@ -133,7 +134,7 @@ if __name__ == "__main__":
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True
     np.random.seed(seed)
 
     os.environ["WANDB_START_METHOD"] = "thread"

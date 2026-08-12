@@ -141,3 +141,7 @@ demo/*.onnx
 demo/XMem.pth
 demo/video_results/*
 demo/.gradio/
+
+.history/
+*.png
+*.onnx

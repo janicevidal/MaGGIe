@@ -54,9 +54,6 @@ def compute_unknown(masks, k_size=30, is_train=False, lower_thres=1.0/255.0, upp
 
     return uncertain
 
-
-
-
 # Create a Gaussian kernel
 def gaussian_kernel(size, sigma):
     grid = torch.arange(size).float() - size // 2

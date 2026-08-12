@@ -35,13 +35,22 @@ scheduler.power = 0.9 # for poly
 scheduler.step_size = 10000 # for step
 scheduler.gamma = 0.1 # for step or warmup
 scheduler.warmup_iters = 1000
+scheduler.warmup_factor = 0.001
+scheduler.delay_iters = 10000
+scheduler.decay_steps = [20000, 30000, 40000]
+scheduler.peak_scale = 1.0
+scheduler.eta_min = 0.00001
 CONFIG.train.scheduler = scheduler
 
 CONFIG.wandb = CN({})
 CONFIG.wandb.project = 'maggie'
-CONFIG.wandb.entity = 'research'
-CONFIG.wandb.use = True
+CONFIG.wandb.entity = 'vidal'
+CONFIG.wandb.use = False
 CONFIG.wandb.id = ''
+
+CONFIG.tensorboard = CN({})
+CONFIG.tensorboard.use = True
+CONFIG.tensorboard.log_dir = 'tensorboard'
 
 # ------------------------ Testing ------------------------
 CONFIG.test = CN({})
@@ -64,8 +73,8 @@ CONFIG.model.warmup_iters = 5000
 # Encoder
 CONFIG.model.encoder = 'res_encoder_29' # resnet34
 CONFIG.model.encoder_args = CN({}, new_allowed=True)
-CONFIG.model.encoder_args.pretrained = True
-CONFIG.model.encoder_args.num_mask = 1
+# CONFIG.model.encoder_args.pretrained = True
+# CONFIG.model.encoder_args.num_mask = 1
 
 # ASPP
 CONFIG.model.aspp = CN({})
@@ -81,9 +90,20 @@ CONFIG.model.loss_alpha_w = 1.0
 CONFIG.model.loss_alpha_type = 'l1'
 CONFIG.model.loss_alpha_grad_w = 1.0
 CONFIG.model.loss_alpha_lap_w = 1.0
+CONFIG.model.loss_alpha_gradun_w = 1.0
+CONFIG.model.loss_alpha_lapun_w = 1.0
+CONFIG.model.loss_alpha_ddc_w = 1.0
 CONFIG.model.loss_atten_w = 1.0
 CONFIG.model.loss_reweight_os8 = True
 CONFIG.model.loss_dtSSD_w = 1.0
+
+CONFIG.model.lambdas_pix_last = CN()
+CONFIG.model.lambdas_pix_last.bce = 30
+CONFIG.model.lambdas_pix_last.mae = 100
+CONFIG.model.lambdas_pix_last.ssim = 10
+CONFIG.model.pix_loss_weight = 1.0
+CONFIG.model.gdt_loss_weight = 1.0
+CONFIG.model.use_ddc_loss = False
 
 # For SHM
 CONFIG.model.shm = CN({})

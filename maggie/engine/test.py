@@ -17,55 +17,76 @@ from maggie.utils.dist import AverageMeter
 from maggie.utils.postprocessing import reverse_transform_tensor, postprocess
 from maggie.utils.metric import build_metric
 
-@torch.no_grad()
-def save_visualization(image_names, alpha_names, alphas, transform_info, output, save_dir):
-    trans_preds = None
-    inc_bin_maps = None
-    if 'diff_pred' in output:
-        trans_preds = output['diff_pred']
-        trans_preds = reverse_transform_tensor(trans_preds, transform_info).cpu().numpy()
-    if 'inc_bin_maps' in output:
-        inc_bin_maps = output['inc_bin_maps'][0].float()
-        inc_bin_maps = reverse_transform_tensor(inc_bin_maps, transform_info).cpu().numpy() > 0.5
-        inc_bin_maps = inc_bin_maps.astype('uint8')
+# @torch.no_grad()
+# def save_visualization(image_names, alpha_names, alphas, transform_info, output, save_dir):
+#     trans_preds = None
+#     inc_bin_maps = None
+#     if 'diff_pred' in output:
+#         trans_preds = output['diff_pred']
+#         trans_preds = reverse_transform_tensor(trans_preds, transform_info).cpu().numpy()
+#     if 'inc_bin_maps' in output:
+#         inc_bin_maps = output['inc_bin_maps'][0].float()
+#         inc_bin_maps = reverse_transform_tensor(inc_bin_maps, transform_info).cpu().numpy() > 0.5
+#         inc_bin_maps = inc_bin_maps.astype('uint8')
 
-    for idx in range(len(image_names)):
-        image_name = image_names[idx][0]
-        video_name, image_name = image_name.split('/')[-2:]
+#     for idx in range(len(image_names)):
+#         image_name = image_names[idx][0]
+#         video_name, image_name = image_name.split('/')[-2:]
 
-        # Save alpha pred
-        alpha_pred_path = os.path.join(save_dir, video_name)
-        os.makedirs(alpha_pred_path, exist_ok=True)
-        alpha_pred = (alphas[0, idx] * 255).astype('uint8')
-        for inst_id in range(alpha_pred.shape[0]):
-            target_path = os.path.join(alpha_pred_path, image_name[:-4])
-            if alpha_names is not None:
-                target_path = os.path.join(target_path, alpha_names[inst_id][0])
-            else:
-                if alpha_pred.shape[0] > 1:
-                    target_path = os.path.join(target_path, "{:2d}.png".format(inst_id).replace(' ', '0'))
-                else:
-                    target_path = target_path + ".png"
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            cv2.imwrite(target_path, alpha_pred[inst_id])
+#         # Save alpha pred
+#         alpha_pred_path = os.path.join(save_dir, video_name)
+#         os.makedirs(alpha_pred_path, exist_ok=True)
+#         alpha_pred = (alphas[0, idx] * 255).astype('uint8')
+#         for inst_id in range(alpha_pred.shape[0]):
+#             target_path = os.path.join(alpha_pred_path, image_name[:-4])
+#             if alpha_names is not None:
+#                 target_path = os.path.join(target_path, alpha_names[inst_id][0])
+#             else:
+#                 if alpha_pred.shape[0] > 1:
+#                     target_path = os.path.join(target_path, "{:2d}.png".format(inst_id).replace(' ', '0'))
+#                 else:
+#                     target_path = target_path + ".png"
+#             os.makedirs(os.path.dirname(target_path), exist_ok=True)
+#             cv2.imwrite(target_path, alpha_pred[inst_id])
                 
 
-        if trans_preds is not None:
-            # Save trans pred
-            trans_pred_path = os.path.join(save_dir, 'diff_pred', video_name)
-            os.makedirs(trans_pred_path, exist_ok=True)
-            # import pdb; pdb.set_trace()
-            trans_pred = (trans_preds[0, idx, 0] * 255).astype('uint8')
-            if not os.path.isfile(os.path.join(trans_pred_path, image_name)):
-                cv2.imwrite(os.path.join(trans_pred_path, image_name), trans_pred)
+#         if trans_preds is not None:
+#             # Save trans pred
+#             trans_pred_path = os.path.join(save_dir, 'diff_pred', video_name)
+#             os.makedirs(trans_pred_path, exist_ok=True)
+#             # import pdb; pdb.set_trace()
+#             trans_pred = (trans_preds[0, idx, 0] * 255).astype('uint8')
+#             if not os.path.isfile(os.path.join(trans_pred_path, image_name)):
+#                 cv2.imwrite(os.path.join(trans_pred_path, image_name), trans_pred)
 
-        # Save inc binary pred
-        if inc_bin_maps is not None:
-            inc_bin_path = os.path.join(save_dir, 'inc_pred', video_name)
-            os.makedirs(inc_bin_path, exist_ok=True)
-            inc_bin_pred = (inc_bin_maps[0, idx, 0] * 255).astype('uint8')
-            if not os.path.isfile(os.path.join(inc_bin_path, image_name)):
-                cv2.imwrite(os.path.join(inc_bin_path, image_name), inc_bin_pred)
+#         # Save inc binary pred
+#         if inc_bin_maps is not None:
+#             inc_bin_path = os.path.join(save_dir, 'inc_pred', video_name)
+#             os.makedirs(inc_bin_path, exist_ok=True)
+#             inc_bin_pred = (inc_bin_maps[0, idx, 0] * 255).astype('uint8')
+#             if not os.path.isfile(os.path.join(inc_bin_path, image_name)):
+#                 cv2.imwrite(os.path.join(inc_bin_path, image_name), inc_bin_pred)
+
+@torch.no_grad()
+def save_visualization(image_names, alpha_names, alphas, transform_info, output, save_dir):
+    alpha_name = alpha_names[0][0]
+    image_name = image_names[0][0]
+    
+    img = cv2.imread(image_name)
+
+    # Save alpha pred
+    os.makedirs(save_dir, exist_ok=True)
+    alpha_pred = (alphas * 255).astype('uint8')
+        
+    target_path = os.path.join(save_dir, os.path.basename(alpha_name))
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    cv2.imwrite(target_path, alpha_pred[0])
+    
+    comp = img * alphas[0][..., None] + 1.0 * (1 - alphas[0][..., None])
+    comp = comp.astype(np.uint8)
+    target_path = os.path.join(save_dir, os.path.basename(image_name))
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    cv2.imwrite(target_path, comp)
 
 def compute_metrics(all_preds, all_trimap, all_gts, val_error_dict, device, prev_preds=None, prev_trimap=None, prev_gts=None):
     current_metrics = {}
@@ -95,6 +116,16 @@ def compute_metrics(all_preds, all_trimap, all_gts, val_error_dict, device, prev
         current_metrics[k] = v.update(cur_preds, cur_gts, trimap=cur_trimap, device=device)
     return current_metrics
 
+def compute_metrics_trimap_free(all_preds, all_gts, val_error_dict, device):
+    current_metrics = {}
+
+    for k, v in val_error_dict.items():
+        cur_preds = all_preds
+        cur_gts = all_gts
+       
+        current_metrics[k] = v.update(cur_preds, cur_gts, trimap=None, device=device)
+    return current_metrics
+
 @torch.no_grad()
 def eval_image(model, val_loader, device, log_iter, val_error_dict, do_postprocessing=False, callback=None, **kwargs):
     
@@ -116,14 +147,18 @@ def eval_image(model, val_loader, device, log_iter, val_error_dict, do_postproce
             if 'alpha_names' in batch:
                 alpha_names = batch.pop('alpha_names')
             transform_info = batch.pop('transform_info')
-            trimap = batch.pop('trimap').numpy()
+            
+            if 'trimap' in batch:
+                trimap = batch.pop('trimap').numpy()
+                
             alpha_gt = batch.pop('alpha').numpy()
             skip = batch.pop('skip').numpy()[0]
             batch = {k: v.to(device) for k, v in batch.items()}
 
-            # Ignore the input with no mask guidance
-            if batch['mask'].sum() == 0:
-                continue
+            if 'mask' in batch:
+                # Ignore the input with no mask guidance
+                if batch['mask'].sum() == 0:
+                    continue
             
             end_time = time.time()
 
@@ -134,7 +169,10 @@ def eval_image(model, val_loader, device, log_iter, val_error_dict, do_postproce
             batch_time.update(exec_time)
 
             # Postprocessing alpha
-            alpha = output['refined_masks']
+            if 'refined_masks' in output:
+                alpha = output['refined_masks']
+            else:
+                alpha = output['alpha_pred']
             alpha = reverse_transform_tensor(alpha, transform_info).cpu().numpy()
             
             # Threshold some high-low values
@@ -145,10 +183,13 @@ def eval_image(model, val_loader, device, log_iter, val_error_dict, do_postproce
                 alpha = postprocess(alpha)
 
             # Compute metrics
-            current_metrics = compute_metrics(alpha[:, skip:], trimap[:, skip:], alpha_gt[:, skip:], val_error_dict, device)
+            if 'trimap' in batch:
+                current_metrics = compute_metrics(alpha[:, skip:], trimap[:, skip:], alpha_gt[:, skip:], val_error_dict, device)
+            else:
+                current_metrics = compute_metrics_trimap_free(alpha[:, skip:], alpha_gt[:, skip:], val_error_dict, device)
 
             # Logging
-            if i % log_iter == 0:
+            if i % log_iter == 0 and i > 0:
                 log_str = "Validation: Iter {}/{}: ".format(i, len(val_loader))
                 for k, v in current_metrics.items():
                     log_str += "{} - {:.4f}, ".format(k, v)
@@ -340,9 +381,9 @@ def test(cfg, rank=0, is_dist=False):
     val_error_dict = build_metric(cfg.test.metrics)
     
     # Adding some MAD metrics for each fg, bg, unk
-    val_error_dict["MAD_fg"] = copy.deepcopy(val_error_dict['MAD'])
-    val_error_dict["MAD_bg"] = copy.deepcopy(val_error_dict['MAD'])
-    val_error_dict["MAD_unk"] = copy.deepcopy(val_error_dict['MAD'])
+    # val_error_dict["MAD_fg"] = copy.deepcopy(val_error_dict['MAD'])
+    # val_error_dict["MAD_bg"] = copy.deepcopy(val_error_dict['MAD'])
+    # val_error_dict["MAD_unk"] = copy.deepcopy(val_error_dict['MAD'])
 
     # Start testing
     logging.info("Start testing...")
@@ -369,7 +410,3 @@ def test(cfg, rank=0, is_dist=False):
         logging.info(metric_str)
         logging.info(plain_str)
         logging.info('batch_time: {:.4f}, data_time: {:.4f}'.format(batch_time, data_time))
-
-
-
-

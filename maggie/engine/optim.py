@@ -3,6 +3,9 @@ import torch
 
 import math
 import torch
+import matplotlib.pyplot as plt
+from pathlib import Path
+from copy import deepcopy
 from torch.optim.lr_scheduler import _LRScheduler
 
 class CosineAnnealingWarmupRestarts(_LRScheduler):
@@ -93,6 +96,75 @@ class CosineAnnealingWarmupRestarts(_LRScheduler):
         self._last_lr = [group['lr'] for group in self.optimizer.param_groups]
 
 
+class WarmupDecayMultiCosineLR(torch.optim.lr_scheduler._LRScheduler):
+    """
+    Warmup + constant holding + multi‑stage cosine decay with peak scaling.
+
+    Args:
+        optimizer: wrapped optimizer.
+        max_iters: total number of training iterations.
+        warmup_iters: number of warmup iterations (linear increase).
+        warmup_factor: initial learning rate factor (e.g., 0.001 => start_lr = base_lr * 0.001).
+        delay_iters: iteration at which the first decay stage starts (must be >= warmup_iters).
+        decay_steps: list of absolute iteration milestones marking the end of each cosine decay stage.
+                     The last value (if less than max_iters) defines the end of the final stage;
+                     if the last value >= max_iters, it is truncated to max_iters.
+        peak_scale: factor by which the peak LR is multiplied after each stage (soft restart).
+        eta_min: minimum LR ratio relative to the current peak (e.g., 0.05).
+        last_epoch: initial epoch (iteration) index.
+    """
+    def __init__(self, optimizer, max_iters, warmup_iters=0, warmup_factor=0.001,
+                 delay_iters=0, decay_steps=[], peak_scale=0.8, eta_min=0.05,
+                 last_epoch=-1):
+        self.max_iters = max_iters
+        self.warmup_iters = warmup_iters
+        self.warmup_factor = warmup_factor
+        self.delay_iters = delay_iters
+        self.decay_steps = sorted([s for s in decay_steps if s > delay_iters and s <= max_iters])
+        if not self.decay_steps:
+            self.decay_steps.append(max_iters)
+        self.peak_scale = peak_scale
+        self.eta_min = eta_min
+        # Ensure delay_iters >= warmup_iters
+        assert delay_iters >= warmup_iters, "delay_iters must be >= warmup_iters"
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        it = self.last_epoch
+        base_lrs = self.base_lrs
+
+        # 1) Warmup
+        if it < self.warmup_iters:
+            # linear warmup
+            alpha = it / self.warmup_iters
+            factor = self.warmup_factor * (1 - alpha) + alpha
+            return [base_lr * factor for base_lr in base_lrs]
+
+        # 2) Hold
+        if it <= self.delay_iters:
+            return [base_lr for base_lr in base_lrs]
+
+        # 3) Multi-stage cosine decay with peak scaling
+        # Determine which stage we are in and compute the current peak LR.
+        # The first stage starts at delay_iters.
+        prev = self.delay_iters
+        current_peaks = list(base_lrs)
+        for milestone in self.decay_steps:
+            if it <= milestone:
+                # current stage: from prev to milestone
+                length = milestone - prev
+                pos = it - prev
+                cos_val = (1 + math.cos(math.pi * pos / length)) / 2
+                lrs = []
+                for peak in current_peaks:
+                    lr = peak * cos_val + self.eta_min * (1 - cos_val)
+                    lrs.append(lr)
+                return lrs
+            else:
+                prev = milestone
+                current_peaks = [peak * self.peak_scale for peak in current_peaks]
+
+        return [self.eta_min for _ in base_lrs]
 
 def build_optim_lr_scheduler(cfg, model):
     def gradient_clipping(optim):
@@ -135,7 +207,55 @@ def build_optim_lr_scheduler(cfg, model):
     elif scheduler_config.name == 'cosine':
         pct_start = scheduler_config.warmup_iters * 1.0 / cfg.train.max_iter
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=optim_config.lr, total_steps=cfg.train.max_iter, pct_start=pct_start, anneal_strategy='cos', cycle_momentum=False)
+    elif scheduler_config.name == 'warmup_decay_multi':
+        scheduler = WarmupDecayMultiCosineLR(
+            optimizer,
+            max_iters=cfg.train.max_iter,
+            warmup_iters=scheduler_config.get('warmup_iters', 0),
+            warmup_factor=scheduler_config.get('warmup_factor', 0.001),
+            delay_iters=scheduler_config.get('delay_iters', 0),
+            decay_steps=scheduler_config.get('decay_steps', []),
+            peak_scale=scheduler_config.get('peak_scale', 0.8),
+            eta_min=scheduler_config.get('eta_min', 0.05)
+        )
     else:
         raise NotImplementedError
 
     return optimizer, scheduler
+
+
+def plot_lr_scheduler(optimizer, scheduler, total_iters=100000, save_dir=''):
+    """
+    模拟训练过程，绘制学习率随迭代步数变化的曲线。
+
+    Args:
+        optimizer: 优化器实例（用于获取初始学习率）
+        scheduler: 学习率调度器实例
+        total_iters: 总迭代步数（通常设为 cfg.train.max_iter）
+        save_dir: 图像保存目录（若为空则显示图像）
+    """
+    opt = deepcopy(optimizer)
+    sched = deepcopy(scheduler)
+    
+    lrs = []
+    steps = []
+    for it in range(total_iters):
+        sched.step()
+        current_lr = sched.optimizer.param_groups[0]['lr']
+        lrs.append(current_lr)
+        steps.append(it)
+    
+    plt.figure(figsize=(12, 5))
+    plt.plot(steps, lrs, linewidth=2)
+    plt.xlabel('Iteration')
+    plt.ylabel('Learning Rate')
+    plt.title('Learning Rate Schedule')
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.xlim(0, total_iters)
+    if save_dir:
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
+        plt.savefig(Path(save_dir) / 'lr_schedule.png', dpi=200, bbox_inches='tight')
+        print(f"LR curve saved to {save_dir}/lr_schedule.png")
+    else:
+        plt.show()
+    plt.close()
