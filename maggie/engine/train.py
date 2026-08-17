@@ -152,7 +152,7 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
     device = f'cuda:{rank}'
     
     log_file = os.path.join(cfg.output_dir, 'train.log')
-    logger = MMLogger.get_instance('matting', log_file=log_file, log_level='INFO')
+    logger = MMLogger.get_instance('matting', log_file=log_file, log_level='INFO', file_mode='a')
     
     scalar_writer = None
     image_writer = None
@@ -246,6 +246,17 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
     loss_buffers = {}
     batch_time_buffer = HistoryBuffer(max_length=50)
     data_time_buffer = HistoryBuffer(max_length=50)
+    grad_norm_buffer = HistoryBuffer(max_length=50)
+    grad_clip_enabled = cfg.train.gradient_clipping.enabled
+    max_grad_norm = cfg.train.gradient_clipping.max_norm
+    if grad_clip_enabled and max_grad_norm <= 0:
+        raise ValueError(
+            'train.gradient_clipping.max_norm must be greater than 0')
+    if grad_clip_enabled:
+        logger.info(
+            f'Gradient clipping enabled: max_norm={max_grad_norm}, norm_type=2')
+    else:
+        logger.info('Gradient clipping disabled; monitoring grad_norm only')
 
     # Build validation metrics
     val_error_dict = build_metric(cfg.train.val_metrics)
@@ -287,7 +298,32 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
             if loss is None:
                 logging.error("Loss is None!")
                 continue
-                
+
+            if precision == 16:
+                scaler.scale(loss['total']).backward()
+                # Clip the real gradients, not the AMP-scaled gradients.
+                scaler.unscale_(optimizer)
+            else:
+                loss['total'].backward()
+
+            all_params = list(itertools.chain(
+                *[group["params"] for group in optimizer.param_groups]))
+            if grad_clip_enabled:
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(
+                    all_params, max_grad_norm)
+            else:
+                grad_norms = [
+                    torch.linalg.vector_norm(param.grad.detach(), ord=2)
+                    for param in all_params if param.grad is not None
+                ]
+                if grad_norms:
+                    total_grad_norm = torch.linalg.vector_norm(
+                        torch.stack(grad_norms), ord=2)
+                else:
+                    total_grad_norm = torch.zeros((), device=device)
+            grad_norm = total_grad_norm.item()
+            grad_norm_buffer.update(grad_norm)
+
             # Store to log_metrics
             loss_reduced = loss
             for k, v in loss_reduced.items():
@@ -303,6 +339,7 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                 log_str = "Epoch: {}, Iter: {}/{}".format(epoch, iter, cfg.train.max_iter)
                 for k, v in loss_buffers.items():
                     log_str += ", {}: {:.4f}".format(k, v.mean())
+                log_str += ", grad_norm: {:.4f}".format(grad_norm_buffer.mean())
                 log_str += ", lr: {:.6f}".format(lr_scheduler.get_last_lr()[0])
                 log_str += ", batch_time: {:.4f}s".format(batch_time_buffer.mean())
                 log_str += ", data_time: {:.4f}s".format(data_time_buffer.mean())
@@ -313,6 +350,7 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                 if scalar_writer is not None:
                     for k, buf in loss_buffers.items():
                         scalar_writer.add_scalar(f'train/{k}', buf.mean(), iter)
+                    scalar_writer.add_scalar('train/grad_norm', grad_norm_buffer.mean(), iter)
                     scalar_writer.add_scalar('train/lr', lr_scheduler.get_last_lr()[0], iter)
                     scalar_writer.add_scalar('train/batch_time', batch_time_buffer.mean(), iter)
                     scalar_writer.add_scalar('train/epoch', epoch, iter)
@@ -320,24 +358,13 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
             if global_rank == 0 and cfg.wandb.use and iter % cfg.train.log_iter == 0:
                 for k, buf in loss_buffers.items():
                     wandb.log({"train/" + k: buf.mean()}, commit=False)
+                wandb.log({"train/grad_norm": grad_norm_buffer.mean()},commit=False)
                 wandb.log({"train/lr": lr_scheduler.get_last_lr()[0]}, commit=False)
                 wandb.log({"train/batch_time": batch_time_buffer.mean()}, commit=False)
                 wandb.log({"train/data_time": data_time_buffer.mean()}, commit=False)
                 wandb.log({"train/epoch": epoch}, commit=False)
                 wandb.log({"train/iter": iter}, commit=True)
 
-            if precision == 16:
-                scaler.scale(loss['total']).backward()
-            else:
-                loss['total'].backward()
-
-            # Clip norm
-            if precision == 16:
-                scaler.unscale_(optimizer)
-                
-            all_params = itertools.chain(*[x["params"] for x in optimizer.param_groups])
-            torch.nn.utils.clip_grad_norm_(all_params, 1.0)
-            
             # Update
             if precision == 16:
                 scaler.step(optimizer)

@@ -1,8 +1,6 @@
 # maggie/dataloader/birefnet_dataset.py
 import os
-import glob
 import numpy as np
-from PIL import Image
 from torch.utils.data import Dataset
 
 from . import transforms as T
@@ -13,6 +11,10 @@ class MattingDataset(Dataset):
                 alpha_dir_name='alphas', **kwargs):
         self.is_train = is_train
         self.root_dir = root_dir
+        if isinstance(root_dir, (str, os.PathLike)):
+            self.root_dirs = [os.fspath(root_dir)]
+        else:
+            self.root_dirs = [os.fspath(path) for path in root_dir]
         self.alpha_dir_name = alpha_dir_name
         self.is_train = is_train
 
@@ -30,7 +32,8 @@ class MattingDataset(Dataset):
         if self.is_train:
             self.transforms += [
                 T.Stack(),
-                T.RandomAffineCrop(crop, self.random, p=affine_p, angle_range=(-15, 15), scale_range=(0.9, 1.1), shift_ratio=0.2),
+                # T.RandomAffineCrop(crop, self.random, p=affine_p, angle_range=(-15, 15), scale_range=(0.9, 1.1), shift_ratio=0.2),
+                T.RandomAffineCrop(crop, self.random, p=affine_p, angle_range=(-15, 15), scale_range=(0.9, 1.1), shift_ratio=0.1),
                 T.RandomHorizontalFlip(self.random, flip_p),
                 T.GammaContrast(self.random, p=gamma_p),
                 T.AdditiveGaussionNoise(self.random, p=add_noise_p),
@@ -51,30 +54,28 @@ class MattingDataset(Dataset):
         self.transforms = T.Compose(self.transforms)
 
     def prepare_image(self):
-        image_dir = os.path.join(self.root_dir, "images")
-        if not os.path.isdir(image_dir):
-            self.data = []
-            return
-        all_files = os.listdir(image_dir)
-        images = [os.path.join(image_dir, f) for f in all_files 
-                  if any(f.endswith(ext) for ext in self.valid_image_extensions)]
-        images.sort()
-        
-        all_alphas = []
-        valid_images = []
-        for image in images:
-            image_name = os.path.basename(image).split('.')[0]
-            alpha_dir = os.path.join(self.root_dir, self.alpha_dir_name)
+        self.data = []
 
-            alpha = os.path.join(alpha_dir, image_name + ".png")
-            
-            if not os.path.exists(alpha):
+        # Pair samples within each root first, then concatenate all roots while
+        # retaining their configured order.
+        for root_dir in self.root_dirs:
+            image_dir = os.path.join(root_dir, "images")
+            if not os.path.isdir(image_dir):
                 continue
-            
-            valid_images.append(image)
-            all_alphas.append(alpha)
-        
-        self.data = list(zip(valid_images, all_alphas))
+
+            images = [
+                os.path.join(image_dir, file_name)
+                for file_name in os.listdir(image_dir)
+                if any(file_name.endswith(ext) for ext in self.valid_image_extensions)
+            ]
+            images.sort()
+
+            alpha_dir = os.path.join(root_dir, self.alpha_dir_name)
+            for image in images:
+                image_name = os.path.splitext(os.path.basename(image))[0]
+                alpha = os.path.join(alpha_dir, image_name + ".png")
+                if os.path.exists(alpha):
+                    self.data.append((image, alpha))
 
     def __len__(self):
         return len(self.data)

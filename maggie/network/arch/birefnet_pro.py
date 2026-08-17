@@ -21,7 +21,7 @@ class BiRefNetPro(nn.Module, PyTorchModelHubMixin):
         self.decoder = eval(cfg.decoder)(**cfg.decoder_args)
 
         # Some weights for loss
-        self.lap_loss = LapLoss()
+        self.lap_loss = LapLoss(channels=1)
         self.grad_loss = GradientLoss()
         
         self.criterions_last = {}
@@ -47,22 +47,30 @@ class BiRefNetPro(nn.Module, PyTorchModelHubMixin):
             self.gdt_loss_weight = self.cfg.gdt_loss_weight
 
         # Init weights
-        self._init_weights(self.decoder)
+        self.decoder.apply(self._init_weights)
         
         if hasattr(self.encoder, 'init_weights'):
             self.encoder.init_weights()
     
     def _init_weights(self, module):
-        for name, p in module.named_parameters():
-            if p.dim() > 1:
-                if 'conv' in name or isinstance(module, nn.Conv2d):
-                    nn.init.kaiming_normal_(p, mode='fan_out', nonlinearity='relu')
-                elif 'linear' in name or isinstance(module, nn.Linear):
-                    nn.init.kaiming_normal_(p, mode='fan_in', nonlinearity='relu')
-                else:
-                    nn.init.kaiming_normal_(p, mode='fan_out', nonlinearity='relu')
-            elif 'bias' in name:
-                nn.init.constant_(p, 0)
+        if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d)):
+            nn.init.kaiming_normal_(
+                module.weight, mode='fan_out', nonlinearity='relu')
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(
+                module.weight, mode='fan_in', nonlinearity='relu')
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+        elif isinstance(module, (
+                nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d,
+                nn.SyncBatchNorm, nn.GroupNorm, nn.LayerNorm,
+                nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d)):
+            if module.weight is not None:
+                nn.init.constant_(module.weight, 1)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
     
     def consistency(self, image, alpha, kernel_size=11):
         b, c, h, w = image.shape

@@ -145,3 +145,4 @@ demo/.gradio/
 .history/
 *.png
 *.onnx
+*.orig

@@ -21,6 +21,11 @@ CONFIG.train.val_metrics = ['MAD', 'MSE', 'dtSSD']
 CONFIG.train.val_best_metric = 'MAD' # Metric to save the best model
 CONFIG.train.val_dist = True # Evaluate distributed
 
+gradient_clipping = CN({})
+gradient_clipping.enabled = True
+gradient_clipping.max_norm = 1.0 # Global L2 gradient norm
+CONFIG.train.gradient_clipping = gradient_clipping
+
 optimizer = CN({})
 optimizer.name = 'sgd' # sgd
 optimizer.lr = 1.0e-4
@@ -118,6 +123,7 @@ dataset = CN({})
 dataset.train = CN({})
 dataset.train.name = 'VIM'
 dataset.train.root_dir = ''
+dataset.train.root_dirs = []
 dataset.train.split = 'train'
 
 dataset.train.short_size = 768
@@ -146,6 +152,7 @@ dataset.train.motion_p = 0.3
 dataset.test = CN({})
 dataset.test.name = 'VIM'
 dataset.test.root_dir = ''
+dataset.test.root_dirs = []
 dataset.test.split = 'valid'
 dataset.test.short_size = 768
 dataset.test.downscale_mask = True

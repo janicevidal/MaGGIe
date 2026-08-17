@@ -1081,7 +1081,14 @@ class RandomAffineCrop(object):
             angle = self.random.uniform(self.angle_range[0], self.angle_range[1])
             scale = self.random.uniform(self.scale_range[0], self.scale_range[1])
             
-            base_scale = (self.crop_w / W + self.crop_h / H) / 2.0
+            width_scale = self.crop_w / W
+            height_scale = self.crop_h / H
+            if self.random.rand() < 0.5:
+                # Keep the whole image inside the output crop.
+                base_scale = min(width_scale, height_scale)
+            else:
+                # Zoom in moderately and allow cropping along the long side.
+                base_scale = (width_scale + height_scale) / 2.0
             scale *= base_scale
 
             shift_x = self.random.uniform(-self.shift_ratio, self.shift_ratio) * self.crop_w
