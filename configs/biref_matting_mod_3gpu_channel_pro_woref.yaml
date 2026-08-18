@@ -39,7 +39,7 @@ model:
     out_channels: [160, 96, 48, 24]
     ms_supervision: true
     dec_ipt: true
-    out_ref: true
+    out_ref: false
 
   lambdas_pix_last:
     bce: 0
@@ -55,7 +55,7 @@ model:
 
   use_ddc_loss: false
   
-name: biref_matting_mod_3gpu_channel_pro
+name: biref_matting_mod_3gpu_channel_pro_woref
 output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints
 test:
   batch_size: 1

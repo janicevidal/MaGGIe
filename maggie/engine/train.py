@@ -108,7 +108,20 @@ def tensorboard_log_image(batch, output, iter, writer, n_samples=5):
         final_grid = torch.cat([grid_img, grid_gt], dim=1)
 
     writer.add_image('vis/comparison', final_grid, global_step=iter)
-    
+
+
+def adapt_training_batch(batch):
+    """Map segmentation supervision to the alpha key used by current models."""
+    if 'alpha' in batch:
+        return batch
+    if 'mask' in batch:
+        batch['alpha'] = batch.pop('mask')
+        return batch
+    if 'masks' in batch:
+        batch['alpha'] = batch.pop('masks')
+        return batch
+    raise KeyError("Training batch must contain 'alpha', 'mask', or 'masks'")
+
 
 def load_state_dict(model, state_dict):
     current_state_dict = model.state_dict()
@@ -219,7 +232,7 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
 
     epoch = 0
     iter = 0
-    best_score = 99999999999
+    best_score = None
 
     # Load pretrained model
     if os.path.isfile(cfg.model.weights):
@@ -262,6 +275,10 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
     val_error_dict = build_metric(cfg.train.val_metrics)
     assert len(val_error_dict) > 0, "No validation metrics found!"
     assert cfg.train.val_best_metric in val_error_dict, "Best validation metric not found!"
+    best_metric = val_error_dict[cfg.train.val_best_metric]
+    if best_score is None:
+        best_score = (-float('inf') if best_metric.higher_is_better
+                      else float('inf'))
 
     # Start training
     logging.info("Start training...")
@@ -287,6 +304,7 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
             if iter > cfg.train.max_iter:
                 break
 
+            batch = adapt_training_batch(batch)
             batch = {k: v.to(device) for k, v in batch.items()}
             batch['iter'] = iter
             optimizer.zero_grad()
@@ -410,7 +428,11 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                     
                     # Save best model
                     total_error = val_error_dict[cfg.train.val_best_metric].average()
-                    if total_error < best_score:
+                    is_better = (
+                        total_error > best_score
+                        if best_metric.higher_is_better
+                        else total_error < best_score)
+                    if is_better:
                         logging.info("Best score changed from {:.4f} to {:.4f}".format(best_score, total_error))
                         best_score = total_error
                         logging.info("Saving best model...")

@@ -146,12 +146,20 @@ def eval_image(model, val_loader, device, log_iter, val_error_dict, do_postproce
             alpha_names = None
             if 'alpha_names' in batch:
                 alpha_names = batch.pop('alpha_names')
+            elif 'mask_names' in batch:
+                alpha_names = batch.pop('mask_names')
             transform_info = batch.pop('transform_info')
             
             if 'trimap' in batch:
                 trimap = batch.pop('trimap').numpy()
                 
-            alpha_gt = batch.pop('alpha').numpy()
+            target_key = next(
+                (key for key in ('alpha', 'mask', 'masks') if key in batch),
+                None)
+            if target_key is None:
+                raise KeyError(
+                    "Evaluation batch must contain 'alpha', 'mask', or 'masks'")
+            alpha_gt = batch.pop(target_key).numpy()
             skip = batch.pop('skip').numpy()[0]
             batch = {k: v.to(device) for k, v in batch.items()}
 

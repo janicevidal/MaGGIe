@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import skimage.measure
+from scipy.ndimage import convolve, distance_transform_edt
+from skimage.morphology import skeletonize
 from .dist import synchronize, gather
 from multiprocessing import Pool
 from joblib import Parallel, delayed
@@ -13,6 +15,8 @@ def reshape2D(x):
     return x.reshape(-1, *x.shape[-2:])
 
 class Metric(object):
+    higher_is_better = False
+
     def __init__(self):
         self.reset()
     
@@ -64,6 +68,507 @@ class Metric(object):
 
     def average(self):
         return self.score / (self.count + 1e-6)
+
+
+_BINARY_EPS = np.spacing(1)
+
+
+def _prepare_binary_data(pred, gt):
+    """Convert a prediction/target pair to [0, 1] and bool respectively."""
+    pred = pred.astype(np.float64)
+    gt = gt.astype(np.float64)
+    if pred.size and pred.max() > 1:
+        pred = pred / 255.0
+    pred = np.clip(pred, 0, 1)
+    if pred.size and pred.max() != pred.min():
+        pred = (pred - pred.min()) / (pred.max() - pred.min())
+    threshold = 0.5 if not gt.size or gt.max() <= 1 else 128
+    return pred, gt > threshold
+
+
+def _adaptive_threshold(pred):
+    return min(2 * pred.mean(), 1)
+
+
+class BinaryMetric(Metric):
+    """Base class for per-image binary segmentation metrics."""
+
+    def compute_binary(self, pred, gt, valid):
+        raise NotImplementedError
+
+    def compute_metric(self, pred, gt, mask, **kargs):
+        scores = []
+        for pred_i, gt_i, mask_i in zip(pred, gt, mask):
+            pred_i, gt_i = _prepare_binary_data(pred_i, gt_i)
+            valid = mask_i > 0
+            score = (self.compute_binary(pred_i, gt_i, valid)
+                     if np.any(valid) else 0.0)
+            scores.append(score)
+        return float(np.sum(scores)), len(scores)
+
+
+class IoU(BinaryMetric):
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        pred = pred >= 0.5
+        intersection = np.count_nonzero(pred & gt & valid)
+        union = np.count_nonzero((pred | gt) & valid)
+        return intersection / union if union else 1.0
+
+
+class Dice(BinaryMetric):
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        pred = pred >= 0.5
+        intersection = np.count_nonzero(pred & gt & valid)
+        denominator = np.count_nonzero(pred & valid) + np.count_nonzero(gt & valid)
+        return 2 * intersection / denominator if denominator else 1.0
+
+
+class Precision(BinaryMetric):
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        pred = pred >= 0.5
+        predicted = np.count_nonzero(pred & valid)
+        true_positive = np.count_nonzero(pred & gt & valid)
+        if predicted:
+            return true_positive / predicted
+        return 1.0 if not np.any(gt & valid) else 0.0
+
+
+class Recall(BinaryMetric):
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        target = np.count_nonzero(gt & valid)
+        true_positive = np.count_nonzero((pred >= 0.5) & gt & valid)
+        return true_positive / target if target else 1.0
+
+
+class BinaryMAE(BinaryMetric):
+    def compute_binary(self, pred, gt, valid):
+        if not np.any(valid):
+            return 0.0
+        return np.mean(np.abs(pred[valid] - gt[valid]))
+
+
+class BinaryMSE(BinaryMetric):
+    def compute_binary(self, pred, gt, valid):
+        if not np.any(valid):
+            return 0.0
+        return np.mean((pred[valid] - gt[valid]) ** 2)
+
+
+# Names used by common binary-segmentation evaluation scripts.
+MAE = BinaryMAE
+SegMSE = BinaryMSE
+
+
+def _f_measure_curve(pred, gt, beta=0.3):
+    pred = (pred * 255).astype(np.uint8)
+    bins = np.linspace(0, 256, 257)
+    fg_hist, _ = np.histogram(pred[gt], bins=bins)
+    bg_hist, _ = np.histogram(pred[~gt], bins=bins)
+    true_positives = np.cumsum(np.flip(fg_hist))
+    positives = true_positives + np.cumsum(np.flip(bg_hist))
+    precision = true_positives / np.maximum(positives, 1)
+    recall = true_positives / max(np.count_nonzero(gt), 1)
+    numerator = (1 + beta) * precision * recall
+    denominator = beta * precision + recall
+    return np.divide(
+        numerator, denominator, out=np.zeros_like(numerator, dtype=np.float64),
+        where=denominator != 0)
+
+
+def _adaptive_f_measure(pred, gt, beta=0.3):
+    binary_pred = pred >= _adaptive_threshold(pred)
+    intersection = np.count_nonzero(binary_pred & gt)
+    if intersection == 0:
+        return 0.0
+    precision = intersection / max(np.count_nonzero(binary_pred), 1)
+    recall = intersection / max(np.count_nonzero(gt), 1)
+    return (1 + beta) * precision * recall / (beta * precision + recall)
+
+
+class FMeasure(BinaryMetric):
+    """Maximum F-measure over 256 thresholds (beta=0.3)."""
+
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        return _f_measure_curve(pred[valid], gt[valid]).max()
+
+
+class MeanFMeasure(FMeasure):
+    """Mean F-measure over 256 thresholds."""
+
+    def compute_binary(self, pred, gt, valid):
+        return _f_measure_curve(pred[valid], gt[valid]).mean()
+
+
+class AdaptiveFMeasure(FMeasure):
+    def compute_binary(self, pred, gt, valid):
+        return _adaptive_f_measure(pred[valid], gt[valid])
+
+
+class SMeasure(BinaryMetric):
+    """Structure measure from the referenced binary-mask evaluator."""
+
+    higher_is_better = True
+
+    def __init__(self, alpha=0.5):
+        self.alpha = alpha
+        super().__init__()
+
+    @staticmethod
+    def _s_object(pred, gt):
+        values = pred[gt]
+        if values.size == 0:
+            return 0.0
+        mean = values.mean()
+        std = values.std(ddof=1) if values.size > 1 else 0.0
+        return 2 * mean / (mean ** 2 + 1 + std + _BINARY_EPS)
+
+    def _object(self, pred, gt):
+        foreground = pred * gt
+        background = (1 - pred) * (~gt)
+        weight = gt.mean()
+        return (weight * self._s_object(foreground, gt) +
+                (1 - weight) * self._s_object(background, ~gt))
+
+    @staticmethod
+    def _ssim(pred, gt):
+        if pred.size == 0:
+            return 0.0
+        pred_mean = pred.mean()
+        gt_mean = gt.mean()
+        if pred.size == 1:
+            return float(np.isclose(pred_mean, gt_mean))
+        pred_var = np.sum((pred - pred_mean) ** 2) / (pred.size - 1)
+        gt_var = np.sum((gt - gt_mean) ** 2) / (gt.size - 1)
+        covariance = np.sum(
+            (pred - pred_mean) * (gt - gt_mean)) / (gt.size - 1)
+        alpha = 4 * pred_mean * gt_mean * covariance
+        beta = ((pred_mean ** 2 + gt_mean ** 2) *
+                (pred_var + gt_var))
+        if alpha != 0:
+            return alpha / (beta + _BINARY_EPS)
+        return 1.0 if beta == 0 else 0.0
+
+    def _region(self, pred, gt):
+        h, w = gt.shape
+        if np.any(gt):
+            y, x = np.argwhere(gt).mean(axis=0).round().astype(int)
+        else:
+            x, y = round(w / 2), round(h / 2)
+        x = min(max(x + 1, 1), w)
+        y = min(max(y + 1, 1), h)
+        regions = (
+            (slice(0, y), slice(0, x)),
+            (slice(0, y), slice(x, w)),
+            (slice(y, h), slice(0, x)),
+            (slice(y, h), slice(x, w)))
+        weights = (
+            x * y / (h * w), y * (w - x) / (h * w),
+            (h - y) * x / (h * w), (h - y) * (w - x) / (h * w))
+        return sum(
+            weight * self._ssim(pred[region], gt[region])
+            for region, weight in zip(regions, weights))
+
+    def compute_binary(self, pred, gt, valid):
+        pred = np.where(valid, pred, 0)
+        gt = gt & valid
+        foreground_ratio = gt.mean()
+        if foreground_ratio == 0:
+            return 1 - pred.mean()
+        if foreground_ratio == 1:
+            return pred.mean()
+        score = (self.alpha * self._object(pred, gt) +
+                 (1 - self.alpha) * self._region(pred, gt))
+        return max(0.0, score)
+
+
+def _e_measure_parts(fg_fg, fg_bg, pred_fg, pred_bg, gt_fg, size):
+    bg_fg = gt_fg - fg_fg
+    bg_bg = pred_bg - bg_fg
+    parts = (fg_fg, fg_bg, bg_fg, bg_bg)
+    mean_pred = pred_fg / size
+    mean_gt = gt_fg / size
+    combinations = (
+        (1 - mean_pred, 1 - mean_gt),
+        (1 - mean_pred, -mean_gt),
+        (-mean_pred, 1 - mean_gt),
+        (-mean_pred, -mean_gt))
+    result = 0
+    for part, (pred_value, gt_value) in zip(parts, combinations):
+        alignment = (2 * pred_value * gt_value /
+                     (pred_value ** 2 + gt_value ** 2 + _BINARY_EPS))
+        result = result + ((alignment + 1) ** 2 / 4) * part
+    return result
+
+
+def _e_measure_curve(pred, gt):
+    pred = (pred * 255).astype(np.uint8)
+    bins = np.linspace(0, 256, 257)
+    fg_hist, _ = np.histogram(pred[gt], bins=bins)
+    bg_hist, _ = np.histogram(pred[~gt], bins=bins)
+    fg_fg = np.cumsum(np.flip(fg_hist))
+    fg_bg = np.cumsum(np.flip(bg_hist))
+    pred_fg = fg_fg + fg_bg
+    size = gt.size
+    gt_fg = np.count_nonzero(gt)
+    pred_bg = size - pred_fg
+    if gt_fg == 0:
+        enhanced_sum = pred_bg
+    elif gt_fg == size:
+        enhanced_sum = pred_fg
+    else:
+        enhanced_sum = _e_measure_parts(
+            fg_fg, fg_bg, pred_fg, pred_bg, gt_fg, size)
+    return np.clip(enhanced_sum / max(size - 1, _BINARY_EPS), 0, 1)
+
+
+def _adaptive_e_measure(pred, gt):
+    binary_pred = pred >= _adaptive_threshold(pred)
+    fg_fg = np.count_nonzero(binary_pred & gt)
+    fg_bg = np.count_nonzero(binary_pred & ~gt)
+    pred_fg = fg_fg + fg_bg
+    size = gt.size
+    gt_fg = np.count_nonzero(gt)
+    pred_bg = size - pred_fg
+    if gt_fg == 0:
+        enhanced_sum = pred_bg
+    elif gt_fg == size:
+        enhanced_sum = pred_fg
+    else:
+        enhanced_sum = _e_measure_parts(
+            fg_fg, fg_bg, pred_fg, pred_bg, gt_fg, size)
+    return float(np.clip(
+        enhanced_sum / max(size - 1, _BINARY_EPS), 0, 1))
+
+
+class EMeasure(BinaryMetric):
+    """Mean enhanced-alignment measure over 256 thresholds."""
+
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        return _e_measure_curve(pred[valid], gt[valid]).mean()
+
+
+class MaxEMeasure(EMeasure):
+    def compute_binary(self, pred, gt, valid):
+        return _e_measure_curve(pred[valid], gt[valid]).max()
+
+
+class AdaptiveEMeasure(EMeasure):
+    def compute_binary(self, pred, gt, valid):
+        return _adaptive_e_measure(pred[valid], gt[valid])
+
+
+class WeightedFMeasure(BinaryMetric):
+    higher_is_better = True
+
+    @staticmethod
+    def _gaussian_kernel(shape=(7, 7), sigma=5):
+        m, n = [(size - 1) / 2 for size in shape]
+        y, x = np.ogrid[-m:m + 1, -n:n + 1]
+        kernel = np.exp(-(x * x + y * y) / (2 * sigma * sigma))
+        kernel[kernel < np.finfo(kernel.dtype).eps * kernel.max()] = 0
+        if kernel.sum() != 0:
+            kernel /= kernel.sum()
+        return kernel
+
+    def compute_binary(self, pred, gt, valid):
+        pred = np.where(valid, pred, 0)
+        gt = gt & valid
+        if not np.any(gt):
+            return 0.0
+        distance, indices = distance_transform_edt(
+            ~gt, return_indices=True)
+        error = np.abs(pred - gt)
+        propagated_error = error.copy()
+        propagated_error[~gt] = error[
+            indices[0][~gt], indices[1][~gt]]
+        smoothed_error = convolve(
+            propagated_error, self._gaussian_kernel(),
+            mode='constant', cval=0)
+        minimum_error = np.where(
+            gt & (smoothed_error < error), smoothed_error, error)
+        importance = np.where(
+            ~gt, 2 - np.exp(np.log(0.5) / 5 * distance), 1)
+        weighted_error = minimum_error * importance
+        true_positive = gt.sum() - weighted_error[gt].sum()
+        false_positive = weighted_error[~gt].sum()
+        recall = 1 - weighted_error[gt].mean()
+        precision = true_positive / (
+            true_positive + false_positive + _BINARY_EPS)
+        return (2 * recall * precision /
+                (recall + precision + _BINARY_EPS))
+
+
+def _mask_to_boundary(mask, dilation_ratio=0.02):
+    h, w = mask.shape
+    dilation = max(1, int(round(dilation_ratio * np.sqrt(h ** 2 + w ** 2))))
+    padded = cv2.copyMakeBorder(
+        mask.astype(np.uint8), 1, 1, 1, 1,
+        cv2.BORDER_CONSTANT, value=0)
+    eroded = cv2.erode(
+        padded, np.ones((3, 3), dtype=np.uint8), iterations=dilation)
+    return mask.astype(np.uint8) - eroded[1:h + 1, 1:w + 1]
+
+
+def _boundary_iou_curve(pred, gt):
+    gt_boundary = _mask_to_boundary(gt) > 0
+    pred_boundary = _mask_to_boundary((pred * 255).astype(np.uint8))
+    bins = np.linspace(0, 256, 257)
+    fg_hist, _ = np.histogram(pred_boundary[gt_boundary], bins=bins)
+    bg_hist, _ = np.histogram(pred_boundary[~gt_boundary], bins=bins)
+    true_positive = np.cumsum(np.flip(fg_hist))
+    false_positive = np.cumsum(np.flip(bg_hist))
+    target = np.count_nonzero(gt_boundary)
+    denominator = target + false_positive
+    return np.divide(
+        true_positive, denominator,
+        out=np.ones_like(true_positive, dtype=np.float64),
+        where=denominator != 0)
+
+
+class BIoU(BinaryMetric):
+    """Maximum boundary IoU over 256 thresholds."""
+
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        pred = np.where(valid, pred, 0)
+        gt = gt & valid
+        return _boundary_iou_curve(pred, gt).max()
+
+
+class MeanBIoU(BIoU):
+    def compute_binary(self, pred, gt, valid):
+        pred = np.where(valid, pred, 0)
+        gt = gt & valid
+        return _boundary_iou_curve(pred, gt).mean()
+
+
+class MBA(BinaryMetric):
+    """Mean boundary accuracy over five boundary widths."""
+
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        pred = (pred > 128.0 / 255.0) & valid
+        gt = gt & valid
+        h, w = gt.shape
+        accuracies = []
+        max_radius = (w + h) / 300
+        for index in range(5):
+            radius = 1 + int((max_radius - 1) / 5 * index)
+            radius = max(radius, 1)
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
+            boundary = cv2.morphologyEx(
+                gt.astype(np.uint8), cv2.MORPH_GRADIENT, kernel) > 0
+            boundary &= valid
+            if not np.any(boundary):
+                accuracies.append(float(np.array_equal(pred, gt)))
+            else:
+                accuracies.append(np.mean(pred[boundary] == gt[boundary]))
+        return np.mean(accuracies)
+
+
+class HCE(BinaryMetric):
+    """Human correction effort; lower is better."""
+
+    @staticmethod
+    def _filter_boundary_condition(boundaries, mask, condition):
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        condition = cv2.dilate(condition.astype(np.uint8), kernel)
+        labels = skimage.measure.label(mask)
+        independent = np.ones(len(np.unique(labels)))
+        independent[0] = 0
+        index_map = np.zeros_like(condition)
+        selected_boundaries = []
+        for boundary in boundaries:
+            pieces = []
+            piece = []
+            for point in boundary[:, 0]:
+                column, row = point
+                if condition[row, column] == 0 or index_map[row, column] != 0:
+                    if piece:
+                        pieces.append(piece)
+                        piece = []
+                    continue
+                piece.append([column, row])
+                index_map[row, column] += 1
+                independent[labels[row, column]] = 0
+            if piece:
+                pieces.append(piece)
+            if len(pieces) > 1:
+                first_x, first_y = pieces[0][0]
+                last_x, last_y = pieces[-1][-1]
+                if abs(first_x - last_x) <= 1 and abs(first_y - last_y) <= 1:
+                    pieces[-1].extend(pieces[0][::-1])
+                    del pieces[0]
+            selected_boundaries.extend(
+                np.asarray(piece)[:, None, :] for piece in pieces if piece)
+        return selected_boundaries, independent.sum()
+
+    @staticmethod
+    def _polygon_points(boundaries, epsilon=2.0):
+        return sum(
+            len(cv2.approxPolyDP(boundary, epsilon, False))
+            for boundary in boundaries)
+
+    def compute_binary(self, pred, gt, valid):
+        pred = (pred > 128.0 / 255.0) & valid
+        gt = gt & valid
+        gt_skeleton = skeletonize(gt)
+        union = pred | gt
+        true_positive = pred & gt
+        false_positive = pred & ~gt
+        false_negative = gt & ~pred
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        relaxed_union = cv2.erode(
+            union.astype(np.uint8), kernel, iterations=5) > 0
+
+        relaxed_fp = false_positive & relaxed_union
+        for _ in range(5):
+            relaxed_fp = cv2.dilate(relaxed_fp.astype(np.uint8), kernel) > 0
+            relaxed_fp &= ~(true_positive | false_negative)
+        relaxed_fp &= false_positive
+
+        relaxed_fn = false_negative & relaxed_union
+        for _ in range(5):
+            relaxed_fn = cv2.dilate(relaxed_fn.astype(np.uint8), kernel) > 0
+            relaxed_fn &= ~(true_positive | false_positive)
+        relaxed_fn &= false_negative
+        relaxed_fn |= gt_skeleton & ~true_positive
+
+        fp_contours, _ = cv2.findContours(
+            relaxed_fp.astype(np.uint8), cv2.RETR_TREE,
+            cv2.CHAIN_APPROX_NONE)
+        fn_contours, _ = cv2.findContours(
+            relaxed_fn.astype(np.uint8), cv2.RETR_TREE,
+            cv2.CHAIN_APPROX_NONE)
+        fp_boundaries, fp_independent = self._filter_boundary_condition(
+            fp_contours, relaxed_fp, true_positive | relaxed_fn)
+        fn_boundaries, fn_independent = self._filter_boundary_condition(
+            fn_contours, relaxed_fn,
+            ~(true_positive | relaxed_fp | relaxed_fn))
+        return (self._polygon_points(fp_boundaries) + fp_independent +
+                self._polygon_points(fn_boundaries) + fn_independent)
+
+
+# Short names used by the referenced evaluator.
+S = SMeasure
+F = FMeasure
+E = EMeasure
+WF = WeightedFMeasure
 
 class SAD(Metric):
     

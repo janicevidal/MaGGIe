@@ -40,14 +40,15 @@ class Load(object):
         self.is_rgb = is_rgb
     def __call__(self, input_dict: dict):
         frames = input_dict["frames"]
-        alphas = input_dict["alphas"]
-        masks = input_dict["masks"]
+        alphas = input_dict.get("alphas")
+        masks = input_dict.get("masks")
         # weights = input_dict["weights"]
 
         frames = [np.array(Image.open(frame_path).convert("RGB" if self.is_rgb else "BGR")) for frame_path in frames]
         if masks is not None:
             masks = [np.array(Image.open(mask_path).convert("L")) for mask_path in masks]
-        alphas = [np.array(Image.open(alpha_path).convert("L")) for alpha_path in alphas]
+        if alphas is not None:
+            alphas = [np.array(Image.open(alpha_path).convert("L")) for alpha_path in alphas]
         # if weights is not None:
         #     loaded_weights = []
         #     for weight_path in weights:
@@ -74,8 +75,8 @@ class RandomCenterCrop(object):
     
     def __call__(self, input_dict: dict) -> Any:
         frames = input_dict["frames"]
-        alphas = input_dict["alphas"]
-        masks = input_dict["masks"]
+        alphas = input_dict.get("alphas")
+        masks = input_dict.get("masks")
         # weights = input_dict["weights"]
 
         h, w = frames[0].shape[:2]
@@ -92,7 +93,8 @@ class RandomCenterCrop(object):
             masks = [mask[y:y+new_h, x:x+new_w] for mask in masks]
         # if weights is not None:
         #     weights = [weight[y:y+new_h, x:x+new_w] for weight in weights]
-        alphas = [alpha[y:y+new_h, x:x+new_w] for alpha in alphas]
+        if alphas is not None:
+            alphas = [alpha[y:y+new_h, x:x+new_w] for alpha in alphas]
         
         input_dict["frames"] = frames
         input_dict["alphas"] = alphas
@@ -107,11 +109,14 @@ class ResizeShort(object):
     
     def __call__(self, input_dict: dict):
         frames = input_dict["frames"]
-        alphas = input_dict["alphas"]
-        masks = input_dict["masks"]
+        alphas = input_dict.get("alphas")
+        masks = input_dict.get("masks")
         # weights = input_dict["weights"]
 
-        input_dict["ori_alphas"] = alphas
+        if alphas is not None:
+            input_dict["ori_alphas"] = alphas
+        if masks is not None:
+            input_dict["ori_masks"] = masks
         transform_info = input_dict["transform_info"]
         h, w = frames[0].shape[:2]
         ratio = self.short_size * 1.0 / min(w, h) 
@@ -122,7 +127,8 @@ class ResizeShort(object):
             # if weights is not None:
             #     weights = [cv2.resize(mask, (int(w * ratio), int(h * ratio)), interpolation=cv2.INTER_NEAREST) for mask in weights]
             # import pdb; pdb.set_trace()
-            alphas = [cv2.resize(alpha, (int(w * ratio), int(h * ratio)), interpolation=cv2.INTER_LINEAR) for alpha in alphas]
+            if alphas is not None:
+                alphas = [cv2.resize(alpha, (int(w * ratio), int(h * ratio)), interpolation=cv2.INTER_LINEAR) for alpha in alphas]
         transform_info.append({'name': 'resize', 'ori_size': (h, w), 'ratio': ratio})
         
         input_dict["frames"] = frames
@@ -139,8 +145,8 @@ class PaddingMultiplyBy(object):
 
     def __call__(self, input_dict: dict):
         frames = input_dict["frames"]
-        alphas = input_dict["alphas"]
-        masks = input_dict["masks"]
+        alphas = input_dict.get("alphas")
+        masks = input_dict.get("masks")
         # weights = input_dict["weights"]
         transform_info = input_dict["transform_info"]
 
@@ -152,7 +158,8 @@ class PaddingMultiplyBy(object):
             masks = [cv2.copyMakeBorder(mask, 0, h_pad, 0, w_pad, cv2.BORDER_CONSTANT, value=0) for mask in masks]
         # if weights is not None:
         #     weights = [cv2.copyMakeBorder(mask, 0, h_pad, 0, w_pad, cv2.BORDER_CONSTANT, value=0) for mask in weights]
-        alphas = [cv2.copyMakeBorder(alpha, 0, h_pad, 0, w_pad, cv2.BORDER_CONSTANT, value=0) for alpha in alphas]
+        if alphas is not None:
+            alphas = [cv2.copyMakeBorder(alpha, 0, h_pad, 0, w_pad, cv2.BORDER_CONSTANT, value=0) for alpha in alphas]
         transform_info.append({'name': 'padding', 'pad_size': (h_pad, w_pad)})
         
         input_dict["frames"] = frames
@@ -168,12 +175,13 @@ class Stack(object):
         pass
     def __call__(self, input_dict: dict):
         frames = input_dict["frames"]
-        alphas = input_dict["alphas"]
-        masks = input_dict["masks"]
+        alphas = input_dict.get("alphas")
+        masks = input_dict.get("masks")
         # weights = input_dict["weights"]
 
         frames = np.stack(frames, axis=0)
-        alphas = np.stack(alphas, axis=0)
+        if alphas is not None:
+            alphas = np.stack(alphas, axis=0)
         if masks is not None:
             masks = np.stack(masks, axis=0)
         # if weights is not None:
@@ -283,13 +291,14 @@ class RandomHorizontalFlip(object):
         masks: (T, H, W) or None
         '''
         frames = input_dict["frames"]
-        alphas = input_dict["alphas"]
-        masks = input_dict["masks"]
+        alphas = input_dict.get("alphas")
+        masks = input_dict.get("masks")
         # weights = input_dict["weights"]
 
         if self.random.rand() < self.p:
             frames = frames[:, :, ::-1, :]
-            alphas = alphas[:, :, ::-1]
+            if alphas is not None:
+                alphas = alphas[:, :, ::-1]
             if masks is not None:
                 masks = masks[:, :, ::-1]
             # if weights is not None:
@@ -731,15 +740,20 @@ class ToTensor(object):
         masks: (T, n_ints, H, W) or None
         '''
         frames = input_dict["frames"]
-        alphas = input_dict["alphas"]
-        masks = input_dict["masks"]
+        alphas = input_dict.get("alphas")
+        masks = input_dict.get("masks")
         # weights = input_dict["weights"]
 
         frames = torch.from_numpy(np.ascontiguousarray(frames)).permute(0, 3, 1, 2).contiguous().float()        
-        alphas = torch.from_numpy(np.ascontiguousarray(alphas)).contiguous()
-        n_insts = alphas.shape[0] // frames.shape[0]
-        alphas = alphas.view(frames.shape[0], n_insts, *alphas.shape[1:])
-        alphas[alphas < 5] = 0
+        annotations = alphas if alphas is not None else masks
+        if annotations is None:
+            raise ValueError("ToTensor requires either 'alphas' or 'masks'")
+        n_insts = annotations.shape[0] // frames.shape[0]
+
+        if alphas is not None:
+            alphas = torch.from_numpy(np.ascontiguousarray(alphas)).contiguous()
+            alphas = alphas.view(frames.shape[0], n_insts, *alphas.shape[1:])
+            alphas[alphas < 5] = 0
 
         if masks is not None:
             masks = torch.from_numpy(np.ascontiguousarray(masks).astype('uint8')).contiguous()
@@ -760,6 +774,12 @@ class ToTensor(object):
             ori_alphas = torch.from_numpy(np.ascontiguousarray(ori_alphas)).contiguous()
             ori_alphas = ori_alphas.view(frames.shape[0], n_insts, *ori_alphas.shape[1:])
             input_dict["ori_alphas"] = ori_alphas
+
+        if "ori_masks" in input_dict:
+            ori_masks = input_dict["ori_masks"]
+            ori_masks = torch.from_numpy(np.ascontiguousarray(ori_masks).astype('uint8')).contiguous()
+            ori_masks = ori_masks.view(frames.shape[0], n_insts, *ori_masks.shape[1:])
+            input_dict["ori_masks"] = ori_masks
         
         if "fg" in input_dict:
             input_dict["fg"] = torch.from_numpy(np.ascontiguousarray(input_dict["fg"])).permute(0, 3, 1, 2).contiguous().float()
@@ -780,9 +800,16 @@ class Normalize(object):
         return frames
     
     def __call__(self, input_dict: dict):
-        frames = input_dict["frames"]    
+        frames = input_dict["frames"]
         input_dict["frames"] = self.norm(frames)
-        
+
+        if input_dict.get("alphas") is None:
+            if "fg" in input_dict:
+                input_dict["fg"] = self.norm(input_dict["fg"])
+            if "bg" in input_dict:
+                input_dict["bg"] = self.norm(input_dict["bg"])
+            return input_dict
+
         # TODO: Compute FG, BG based on alpha
         alphas = input_dict["alphas"] / 255.0
         alphas = alphas[:, :, None]
@@ -1054,10 +1081,14 @@ class RandomAffineCrop(object):
 
     def __call__(self, input_dict):
         frames = input_dict["frames"]
-        alphas = input_dict["alphas"]
+        alphas = input_dict.get("alphas")
         masks = input_dict.get("masks", None)
 
+        if alphas is None and masks is None:
+            raise ValueError("RandomAffineCrop requires either 'alphas' or 'masks'")
+
         H, W = frames[0].shape[:2]
+        output_size = (self.crop_w, self.crop_h)
         
         if self.random.rand() > self.p:
             if H > W:
@@ -1067,14 +1098,17 @@ class RandomAffineCrop(object):
                 pad_w = 0
                 pad_h = (W - H) // 2
             crop_frames = [cv2.copyMakeBorder(frame, pad_h, pad_h, pad_w, pad_w, cv2.BORDER_CONSTANT, value=0) for frame in frames]
-            crop_alphas = [cv2.copyMakeBorder(alpha, pad_h, pad_h, pad_w, pad_w, cv2.BORDER_CONSTANT, value=0) for alpha in alphas]
-            crop_frames = [cv2.resize(frame, self.crop_size, interpolation=cv2.INTER_LINEAR) for frame in crop_frames]
-            crop_alphas = [cv2.resize(alpha, self.crop_size, interpolation=cv2.INTER_LINEAR) for alpha in crop_alphas]
+            crop_frames = [cv2.resize(frame, output_size, interpolation=cv2.INTER_LINEAR) for frame in crop_frames]
             crop_frames = np.stack(crop_frames, axis=0)
-            crop_alphas = np.stack(crop_alphas, axis=0)
+            if alphas is not None:
+                crop_alphas = [cv2.copyMakeBorder(alpha, pad_h, pad_h, pad_w, pad_w, cv2.BORDER_CONSTANT, value=0) for alpha in alphas]
+                crop_alphas = [cv2.resize(alpha, output_size, interpolation=cv2.INTER_LINEAR) for alpha in crop_alphas]
+                crop_alphas = np.stack(crop_alphas, axis=0)
+            else:
+                crop_alphas = None
             if masks is not None:
                 crop_masks = [cv2.copyMakeBorder(mask, pad_h, pad_h, pad_w, pad_w, cv2.BORDER_CONSTANT, value=0) for mask in masks]
-                crop_masks = np.stack([cv2.resize(mask, self.crop_size, interpolation=cv2.INTER_NEAREST) for mask in crop_masks], axis=0)
+                crop_masks = np.stack([cv2.resize(mask, output_size, interpolation=cv2.INTER_NEAREST) for mask in crop_masks], axis=0)
             else:
                 crop_masks = None
         else:
@@ -1102,14 +1136,17 @@ class RandomAffineCrop(object):
             M[0, 2] += (self.crop_w / 2 + shift_x - dst_center[0])
             M[1, 2] += (self.crop_h / 2 + shift_y - dst_center[1])
 
-            crop_frames = [cv2.warpAffine(frame, M, self.crop_size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0)) for frame in frames]
+            crop_frames = [cv2.warpAffine(frame, M, output_size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0)) for frame in frames]
             crop_frames = np.stack(crop_frames, axis=0)
 
-            crop_alphas = [cv2.warpAffine(alpha, M, self.crop_size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0) for alpha in alphas]
-            crop_alphas = np.stack(crop_alphas, axis=0)
+            if alphas is not None:
+                crop_alphas = [cv2.warpAffine(alpha, M, output_size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0) for alpha in alphas]
+                crop_alphas = np.stack(crop_alphas, axis=0)
+            else:
+                crop_alphas = None
 
             if masks is not None:
-                crop_masks = [cv2.warpAffine(mask, M, self.crop_size, flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0) for mask in masks]
+                crop_masks = [cv2.warpAffine(mask, M, output_size, flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0) for mask in masks]
                 crop_masks = np.stack(crop_masks, axis=0)
             else:
                 crop_masks = None

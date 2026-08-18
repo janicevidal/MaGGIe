@@ -1,14 +1,13 @@
 dataset:
   test:
-    name: Matting
-    root_dir: /data/xiaoshuai/human_matting/val_0729_resized/
+    name: BinarySegmentation
+    root_dir: ''
     short_size: 512
-    alpha_dir_name: alphas
+    mask_dir_name: masks
   train:
-    name: Matting
-    root_dirs:
-      - /data/xiaoshuai/human_matting/train_0729_resized/
-      - /data/xiaoshuai/human_matting/train_0814_resized/
+    name: BinarySegmentation
+    root_dir: ''
+    root_dirs: []
     random_state: 2026
     crop:
     - 512
@@ -18,11 +17,11 @@ dataset:
     add_noise_p: 0.3
     jpeg_p: 0.1
     affine_p: 0.8
-    alpha_dir_name: alphas
+    mask_dir_name: masks
 
 model:
   arch: BiRefNetPro
-  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/biref_matting_mod_3gpu_channel_pro/model_iter99500.pth
+  weights: ''
   sync_bn: true
   having_unused_params: false
   encoder: star_matting
@@ -42,7 +41,7 @@ model:
     out_ref: true
 
   lambdas_pix_last:
-    bce: 0
+    bce: 30
     mae: 30
     ssim: 5
 
@@ -54,19 +53,29 @@ model:
   loss_alpha_lapun_w: 7.5
 
   use_ddc_loss: false
-  
-name: biref_matting_mod_3gpu_channel_pro
-output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints
+
+name: biref_binary_segmentation_mod_3gpu_channel_pro
+output_dir: output
 test:
   batch_size: 1
   log_iter: 500
   metrics:
-  - MAD
-  - MSE
-  - SAD
+  - IoU
+  - Dice
+  - Precision
+  - Recall
+  - MAE
+  - SegMSE
+  - S
+  - F
+  - E
+  - WF
+  - BIoU
+  - MBA
+  - HCE
   num_workers: 4
   postprocessing: false
-  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/test_channel_pro
+  save_dir: output/biref_binary_segmentation_mod_3gpu_channel_pro/predictions
   save_results: true
 train:
   batch_size: 64
@@ -82,7 +91,7 @@ train:
     name: adamw
     weight_decay: 0.01
   gradient_clipping:
-      enabled: false
+    enabled: false
   resume: ''
   resume_last: false
   scheduler:
@@ -94,13 +103,15 @@ train:
     peak_scale: 0.7
     eta_min: 0.00001
   seed: 1234
-  val_best_metric: MAD
+  val_best_metric: IoU
   val_dist: true
   val_iter: 500
   val_metrics:
-  - MAD
-  - MSE
-  - SAD
+  - IoU
+  - Dice
+  - MAE
+  - S
+  - F
   vis_iter: 500
 tensorboard:
   use: true

@@ -5,6 +5,7 @@ Example:
         --config configs/biref_matting_mod_3gpu_channel_pro_test.yaml \
         --input-dir /path/to/images \
         --output-dir output/demo \
+        --resize-mode fixed \
         --save-composite
 """
 
@@ -17,6 +18,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from maggie.network import build_model
@@ -66,11 +68,8 @@ class ImageFolderDataset(Dataset):
     def __len__(self):
         return len(self.image_paths)
 
-    def __getitem__(self, index):
-        image_path = self.image_paths[index]
-        with Image.open(image_path) as image:
-            image = np.array(image.convert("RGB"))
-
+    def preprocess(self, image):
+        """Resize the short side, then pad the bottom/right to a multiple of 32."""
         ori_h, ori_w = image.shape[:2]
         ratio = self.short_size / float(min(ori_h, ori_w))
         resized_h, resized_w = int(ori_h * ratio), int(ori_w * ratio)
@@ -85,20 +84,110 @@ class ImageFolderDataset(Dataset):
             image, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=0
         )
 
-        image = torch.from_numpy(np.ascontiguousarray(image))
-        image = image.permute(2, 0, 1).contiguous().float() / 255.0
-        image = (image - IMAGENET_MEAN) / IMAGENET_STD
-
         transform_info = [
             {"name": "resize", "ori_size": (ori_h, ori_w), "ratio": ratio},
             {"name": "padding", "pad_size": (pad_h, pad_w)},
         ]
+        return image, transform_info
+
+    def __getitem__(self, index):
+        image_path = self.image_paths[index]
+        with Image.open(image_path) as image:
+            image = np.array(image.convert("RGB"))
+
+        image, transform_info = self.preprocess(image)
+        image = torch.from_numpy(np.ascontiguousarray(image))
+        image = image.permute(2, 0, 1).contiguous().float() / 255.0
+        image = (image - IMAGENET_MEAN) / IMAGENET_STD
+
         return {
             "image": image,
             "image_path": str(image_path),
             "relative_path": str(image_path.relative_to(self.input_dir)),
             "transform_info": transform_info,
         }
+
+
+class FixedSizeImageFolderDataset(ImageFolderDataset):
+    """Resize into a square canvas and center-pad without changing aspect ratio."""
+
+    def preprocess(self, image):
+        ori_h, ori_w = image.shape[:2]
+
+        # Scale the long side to short_size so that the complete image fits in
+        # the fixed short_size x short_size canvas.
+        if ori_w >= ori_h:
+            resized_w = self.short_size
+            resized_h = max(1, int(ori_h * self.short_size / float(ori_w)))
+        else:
+            resized_h = self.short_size
+            resized_w = max(1, int(ori_w * self.short_size / float(ori_h)))
+        image = cv2.resize(
+            image, (resized_w, resized_h), interpolation=cv2.INTER_LINEAR
+        )
+
+        pad_h = self.short_size - resized_h
+        pad_w = self.short_size - resized_w
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+        image = cv2.copyMakeBorder(
+            image,
+            pad_top,
+            pad_bottom,
+            pad_left,
+            pad_right,
+            cv2.BORDER_CONSTANT,
+            value=0,
+        )
+
+        transform_info = [{
+            "name": "fixed_size_padding",
+            "ori_size": (ori_h, ori_w),
+            "resized_size": (resized_h, resized_w),
+            "pad_size": (pad_top, pad_bottom, pad_left, pad_right),
+        }]
+        return image, transform_info
+
+
+def _metadata_value(value):
+    """Read a scalar produced either directly or by DataLoader collation."""
+    if isinstance(value, torch.Tensor):
+        return value.item()
+    return value
+
+
+def reverse_fixed_size_transform(img, transform_info):
+    """Remove centered padding and resize a prediction to its source size."""
+    transform = transform_info[0]
+    ori_h, ori_w = transform["ori_size"]
+    pad_top, pad_bottom, pad_left, pad_right = transform["pad_size"]
+    ori_h, ori_w = int(_metadata_value(ori_h)), int(_metadata_value(ori_w))
+    pad_top = int(_metadata_value(pad_top))
+    pad_bottom = int(_metadata_value(pad_bottom))
+    pad_left = int(_metadata_value(pad_left))
+    pad_right = int(_metadata_value(pad_right))
+
+    input_shape = list(img.shape)
+    height, width = input_shape[-2:]
+    end_h = height - pad_bottom if pad_bottom > 0 else height
+    end_w = width - pad_right if pad_right > 0 else width
+    img = img[..., pad_top:end_h, pad_left:end_w]
+    img = img.reshape(-1, 1, *img.shape[-2:])
+    img = F.interpolate(
+        img, size=(ori_h, ori_w), mode="bilinear", align_corners=False
+    )
+    return img.reshape(*input_shape[:-2], ori_h, ori_w)
+
+
+def reverse_prediction_transform(img, transform_info):
+    transform_name = transform_info[0]["name"]
+    if isinstance(transform_name, (list, tuple)):
+        transform_name = transform_name[0]
+    if transform_name == "fixed_size_padding":
+        return reverse_fixed_size_transform(img, transform_info)
+    return reverse_transform_tensor(img, transform_info)
 
 
 def resolve_device(device_name):
@@ -173,7 +262,7 @@ def run_inference(model, data_loader, device, output_dir, do_postprocessing,
         if alpha is None:
             raise KeyError("Model output contains neither 'refined_masks' nor 'alpha_pred'")
 
-        alpha = reverse_transform_tensor(alpha, transform_info).cpu().numpy()
+        alpha = reverse_prediction_transform(alpha, transform_info).cpu().numpy()
         alpha[alpha <= 1.0 / 255.0] = 0.0
         alpha[alpha >= 254.0 / 255.0] = 1.0
         if do_postprocessing:
@@ -210,6 +299,15 @@ def parse_args():
     parser.add_argument(
         "--short-size", type=int, default=None,
         help="Override dataset.test.short_size from the config",
+    )
+    parser.add_argument(
+        "--resize-mode",
+        choices=("short-side", "fixed"),
+        default="short-side",
+        help=(
+            "short-side keeps the original test preprocessing; fixed fits the "
+            "image into a short-size x short-size canvas with centered zero padding"
+        ),
     )
     parser.add_argument(
         "--device", default="auto", help="Inference device, e.g. cuda:0 or cpu"
@@ -255,7 +353,12 @@ def main():
 
     device = resolve_device(args.device)
     output_dir = Path(args.output_dir).expanduser().resolve()
-    dataset = ImageFolderDataset(
+    dataset_class = (
+        FixedSizeImageFolderDataset
+        if args.resize_mode == "fixed"
+        else ImageFolderDataset
+    )
+    dataset = dataset_class(
         args.input_dir,
         short_size=short_size,
         recursive=not args.non_recursive,
@@ -269,7 +372,12 @@ def main():
         pin_memory=device.type == "cuda",
     )
 
-    logging.info("Found %d images; using %s", len(dataset), device)
+    logging.info(
+        "Found %d images; using %s preprocessing on %s",
+        len(dataset),
+        args.resize_mode,
+        device,
+    )
     model = load_model(cfg, device)
     run_inference(
         model,

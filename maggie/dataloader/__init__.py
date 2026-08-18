@@ -1,6 +1,8 @@
 from .him import HIMDataset
 from .vim import VIMDataset
 from .human_matting import MattingDataset
+from .binary_segmentation import BinarySegmentationDataset
+
 
 def build_dataset(cfg, is_train=True, random_seed=0):
     if cfg.name in ["HIM"]:
@@ -21,7 +23,7 @@ def build_dataset(cfg, is_train=True, random_seed=0):
         else:
             dataset = VIMDataset(root_dir=cfg.root_dir, split=cfg.split, clip_length=cfg.clip_length, overlap=cfg.clip_overlap, is_train=is_train, 
                                  short_size=cfg.short_size, mask_dir_name=cfg.mask_dir_name, alpha_dir_name=cfg.alpha_dir_name)
-    if cfg.name in ["Matting"]:
+    elif cfg.name in ["Matting"]:
         root_dir = cfg.root_dirs if cfg.root_dirs else cfg.root_dir
         if is_train:
             dataset = MattingDataset(root_dir=root_dir, split=cfg.split, short_size=cfg.short_size, crop=cfg.crop, is_train=is_train, random_seed=random_seed,
@@ -29,6 +31,22 @@ def build_dataset(cfg, is_train=True, random_seed=0):
                                      jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p)
         else:
             dataset = MattingDataset(root_dir=root_dir, split=cfg.split, short_size=cfg.short_size, is_train=is_train, alpha_dir_name=cfg.alpha_dir_name)
+    elif cfg.name in ["BinarySegmentation", "Segmentation"]:
+        root_dir = cfg.root_dirs if cfg.root_dirs else cfg.root_dir
+        if is_train:
+            dataset = BinarySegmentationDataset(
+                root_dir=root_dir, split=cfg.split,
+                short_size=cfg.short_size, crop=cfg.crop,
+                is_train=is_train, random_seed=random_seed,
+                mask_dir_name=cfg.mask_dir_name,
+                padding_crop_p=cfg.padding_crop_p, flip_p=cfg.flip_p,
+                gamma_p=cfg.gamma_p, add_noise_p=cfg.add_noise_p,
+                jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p)
+        else:
+            dataset = BinarySegmentationDataset(
+                root_dir=root_dir, split=cfg.split,
+                short_size=cfg.short_size, is_train=is_train,
+                mask_dir_name=cfg.mask_dir_name)
     else:
         raise NotImplementedError
     return dataset
