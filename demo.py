@@ -6,7 +6,8 @@ Example:
         --input-dir /path/to/images \
         --output-dir output/demo \
         --resize-mode fixed \
-        --save-composite
+        --save-composite \
+        --save-visualization
 """
 
 import argparse
@@ -31,6 +32,7 @@ IMAGE_EXTENSIONS = {
 }
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+CHROMA_GREEN_RGB = np.array([0, 177, 64], dtype=np.float32)
 
 
 class ImageFolderDataset(Dataset):
@@ -47,7 +49,11 @@ class ImageFolderDataset(Dataset):
         exclude_dir = Path(exclude_dir).expanduser().resolve() if exclude_dir else None
         excluded_dirs = []
         if exclude_dir == self.input_dir:
-            excluded_dirs = [exclude_dir / "alpha", exclude_dir / "composite"]
+            excluded_dirs = [
+                exclude_dir / "alpha",
+                exclude_dir / "composite",
+                exclude_dir / "visualization",
+            ]
         elif exclude_dir is not None and self.input_dir in exclude_dir.parents:
             excluded_dirs = [exclude_dir]
         self.image_paths = []
@@ -232,24 +238,66 @@ def output_paths(output_dir, relative_path, instance_index=None):
     return alpha_path, composite_path
 
 
-def save_prediction(alpha, image_path, alpha_path, composite_path=None):
+def visualization_path(output_dir, relative_path, instance_index=None):
+    relative_path = Path(relative_path).with_suffix(".png")
+    if instance_index is not None:
+        relative_path = relative_path.with_name(
+            "{}_{:02d}.png".format(relative_path.stem, instance_index)
+        )
+    return output_dir / "visualization" / relative_path
+
+
+def save_prediction(alpha, image_path, alpha_path, composite_path=None,
+                    visualization_output_path=None):
     alpha = np.clip(alpha, 0.0, 1.0)
     alpha_image = np.rint(alpha * 255.0).astype(np.uint8)
     alpha_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(alpha_image, mode="L").save(alpha_path)
 
-    if composite_path is not None:
+    image_rgb = None
+    if composite_path is not None or visualization_output_path is not None:
         with Image.open(image_path) as image:
-            image = np.array(image.convert("RGB"), dtype=np.float32)
-        composite = image * alpha[..., None] + 255.0 * (1.0 - alpha[..., None])
+            image_rgb = np.array(image.convert("RGB"), dtype=np.uint8)
+        if image_rgb.shape[:2] != alpha.shape:
+            raise ValueError(
+                "Prediction and input image sizes do not match: "
+                "alpha={}, image={} for {}".format(
+                    alpha.shape, image_rgb.shape[:2], image_path
+                )
+            )
+
+    if composite_path is not None:
+        composite = (
+            image_rgb.astype(np.float32) * alpha[..., None]
+            + 255.0 * (1.0 - alpha[..., None])
+        )
         composite = np.rint(composite).clip(0, 255).astype(np.uint8)
         composite_path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(composite, mode="RGB").save(composite_path)
 
+    if visualization_output_path is not None:
+        # Match inference_image_sam3.py: [input | alpha | green composite].
+        alpha_vis = (alpha * 255.0).astype(np.uint8)
+        alpha_vis = np.repeat(alpha_vis[..., None], 3, axis=-1)
+        alpha_3d = alpha[..., None]
+        foreground = image_rgb.astype(np.float32) / 255.0 * alpha_3d
+        green_rgb = CHROMA_GREEN_RGB / 255.0
+        green_composite = foreground + (1.0 - alpha_3d) * green_rgb
+        green_composite = (
+            green_composite.clip(0.0, 1.0) * 255.0
+        ).astype(np.uint8)
+        visualization = np.concatenate(
+            [image_rgb, alpha_vis, green_composite], axis=1
+        )
+        visualization_output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(visualization, mode="RGB").save(
+            visualization_output_path
+        )
+
 
 @torch.inference_mode()
 def run_inference(model, data_loader, device, output_dir, do_postprocessing,
-                  save_composite):
+                  save_composite, save_visualization=False):
     total = len(data_loader.dataset)
     for index, sample in enumerate(data_loader, start=1):
         image_path = sample.pop("image_path")[0]
@@ -276,11 +324,15 @@ def run_inference(model, data_loader, device, output_dir, do_postprocessing,
             alpha_path, composite_path = output_paths(
                 output_dir, relative_path, suffix_index
             )
+            vis_path = visualization_path(
+                output_dir, relative_path, suffix_index
+            )
             save_prediction(
                 instance_alpha,
                 image_path,
                 alpha_path,
                 composite_path if save_composite else None,
+                vis_path if save_visualization else None,
             )
 
         logging.info("[%d/%d] %s", index, total, relative_path)
@@ -320,6 +372,13 @@ def parse_args():
     parser.add_argument(
         "--save-composite", action="store_true",
         help="Also composite each prediction over a white background",
+    )
+    parser.add_argument(
+        "--save-visualization", action="store_true",
+        help=(
+            "Also save [input | alpha | green composite] panels under the "
+            "visualization directory"
+        ),
     )
     postprocess_group = parser.add_mutually_exclusive_group()
     postprocess_group.add_argument("--postprocessing", action="store_true")
@@ -386,8 +445,15 @@ def main():
         output_dir,
         do_postprocessing,
         args.save_composite,
+        args.save_visualization,
     )
     logging.info("Done. Alpha mattes saved to %s", output_dir / "alpha")
+    if args.save_composite:
+        logging.info("White composites saved to %s", output_dir / "composite")
+    if args.save_visualization:
+        logging.info(
+            "Visualizations saved to %s", output_dir / "visualization"
+        )
 
 
 if __name__ == "__main__":

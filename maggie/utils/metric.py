@@ -80,8 +80,6 @@ def _prepare_binary_data(pred, gt):
     if pred.size and pred.max() > 1:
         pred = pred / 255.0
     pred = np.clip(pred, 0, 1)
-    if pred.size and pred.max() != pred.min():
-        pred = (pred - pred.min()) / (pred.max() - pred.min())
     threshold = 0.5 if not gt.size or gt.max() <= 1 else 128
     return pred, gt > threshold
 
@@ -105,6 +103,17 @@ class BinaryMetric(Metric):
                      if np.any(valid) else 0.0)
             scores.append(score)
         return float(np.sum(scores)), len(scores)
+
+
+def _binary_confusion(pred, gt, valid, threshold=0.5):
+    """Return TP, TN, FP, and FN counts inside the valid region."""
+    pred = pred >= threshold
+    gt = gt.astype(bool)
+    tp = np.count_nonzero(pred & gt & valid)
+    tn = np.count_nonzero(~pred & ~gt & valid)
+    fp = np.count_nonzero(pred & ~gt & valid)
+    fn = np.count_nonzero(~pred & gt & valid)
+    return tp, tn, fp, fn
 
 
 class IoU(BinaryMetric):
@@ -146,6 +155,76 @@ class Recall(BinaryMetric):
         target = np.count_nonzero(gt & valid)
         true_positive = np.count_nonzero((pred >= 0.5) & gt & valid)
         return true_positive / target if target else 1.0
+
+
+class F1Score(Dice):
+    """Foreground F1 at threshold 0.5; mathematically equal to Dice."""
+
+
+class PixelAccuracy(BinaryMetric):
+    """Fraction of correctly classified foreground and background pixels."""
+
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        tp, tn, fp, fn = _binary_confusion(pred, gt, valid)
+        total = tp + tn + fp + fn
+        return (tp + tn) / total if total else 1.0
+
+
+class Specificity(BinaryMetric):
+    """True-negative rate, measuring rejection of background pixels."""
+
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        _, tn, fp, _ = _binary_confusion(pred, gt, valid)
+        negatives = tn + fp
+        return tn / negatives if negatives else 1.0
+
+
+class BalancedAccuracy(BinaryMetric):
+    """Mean of foreground recall and background specificity."""
+
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        tp, tn, fp, fn = _binary_confusion(pred, gt, valid)
+        positives = tp + fn
+        negatives = tn + fp
+        recall = tp / positives if positives else 1.0
+        specificity = tn / negatives if negatives else 1.0
+        return 0.5 * (recall + specificity)
+
+
+class BalancedErrorRate(BalancedAccuracy):
+    """Balanced error rate: 1 - BalancedAccuracy; lower is better."""
+
+    higher_is_better = False
+
+    def compute_binary(self, pred, gt, valid):
+        return 1.0 - super().compute_binary(pred, gt, valid)
+
+
+class MeanIoU(BinaryMetric):
+    """Mean IoU of foreground and background classes at threshold 0.5."""
+
+    higher_is_better = True
+
+    def compute_binary(self, pred, gt, valid):
+        tp, tn, fp, fn = _binary_confusion(pred, gt, valid)
+        foreground_union = tp + fp + fn
+        background_union = tn + fp + fn
+        foreground_iou = tp / foreground_union if foreground_union else 1.0
+        background_iou = tn / background_union if background_union else 1.0
+        return 0.5 * (foreground_iou + background_iou)
+
+
+# Common names used by segmentation evaluation tools and config files.
+Accuracy = PixelAccuracy
+F1 = F1Score
+BER = BalancedErrorRate
+mIoU = MeanIoU
 
 
 class BinaryMAE(BinaryMetric):

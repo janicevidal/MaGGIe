@@ -5,3 +5,5 @@ from .dummy import Dummy
 # from .maggie_temp import MaGGIe_Temp
 from .birefnet import BiRefNet
 from .birefnet_pro import BiRefNetPro
+from .birefnet_pro_aux import BiRefNetProAux
+from .birefnet_binary import BiRefNetBinary

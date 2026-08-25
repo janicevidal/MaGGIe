@@ -102,12 +102,15 @@ class ReconBlock(nn.Module):
 
 
 class BiRefDecoder(nn.Module):
-    def __init__(self, in_channels, ipt_channels, out_channels, ms_supervision=True, split=True, dec_ipt=True, out_ref=True):
+    def __init__(self, in_channels, ipt_channels, out_channels,
+                 ms_supervision=True, split=True, dec_ipt=True, out_ref=True,
+                 share_p3_patches=False):
         super(BiRefDecoder, self).__init__()
         
         self.ms_supervision = ms_supervision
         self.dec_ipt = dec_ipt
         self.out_ref = out_ref
+        self.share_p3_patches = share_p3_patches
         
         norm_cfg=dict(type='BN')
         act_cfg=dict(type='ReLU')
@@ -119,7 +122,8 @@ class BiRefDecoder(nn.Module):
 
             ipt_blk_in_channels = [2**i*3 for i in (10, 8, 6, 4, 0)] if self.split else [3] * 5
 
-            self.ipt_blk5 = IPTBlock(ipt_blk_in_channels[0], ipt_channels[0], norm_cfg, act_cfg)
+            ipt_blk5_in_channels = (ipt_blk_in_channels[1] if self.share_p3_patches else ipt_blk_in_channels[0])
+            self.ipt_blk5 = IPTBlock(ipt_blk5_in_channels, ipt_channels[0], norm_cfg, act_cfg)
             self.ipt_blk4 = IPTBlock(ipt_blk_in_channels[1], ipt_channels[1], norm_cfg, act_cfg)
             self.ipt_blk3 = IPTBlock(ipt_blk_in_channels[2], ipt_channels[2], norm_cfg, act_cfg)
             self.ipt_blk2 = IPTBlock(ipt_blk_in_channels[3], ipt_channels[3], norm_cfg, act_cfg)
@@ -182,8 +186,17 @@ class BiRefDecoder(nn.Module):
         outs = []
 
         if self.dec_ipt:
-            patches_batch = image2patches(x, patch_ref=x4, transformation='b c (hg h) (wg w) -> b (c hg wg) h w') if self.split else x
-            x4 = torch.cat((x4, self.ipt_blk5(patches_batch)), 1)
+            if self.share_p3_patches:
+                if self.split:
+                    # x3 is available before decoding and has the same spatial
+                    # size as _p3, avoiding a circular dependency on _p3.
+                    patches_p3 = image2patches(x, patch_ref=x3, transformation=('b c (hg h) (wg w) -> b (c hg wg) h w'))
+                else:
+                    patches_p3 = F.interpolate(x, size=x3.shape[2:], **self.up_kwargs)
+                patches_p4 = F.adaptive_avg_pool2d(patches_p3, output_size=x4.shape[2:])
+            else:
+                patches_p4 = image2patches(x, patch_ref=x4, transformation=('b c (hg h) (wg w) -> b (c hg wg) h w')) if self.split else x
+            x4 = torch.cat((x4, self.ipt_blk5(patches_p4)), 1)
             
         p4 = self.decoder_block4(x4)
         m4 = self.conv_ms_spvn_4(p4) if self.ms_supervision and self.training else None
@@ -206,8 +219,9 @@ class BiRefDecoder(nn.Module):
         _p3 = _p4 + self.lateral_block3(x3)
 
         if self.dec_ipt:
-            patches_batch = image2patches(x, patch_ref=_p3, transformation='b c (hg h) (wg w) -> b (c hg wg) h w') if self.split else x
-            _p3 = torch.cat((_p3, self.ipt_blk4(patches_batch)), 1)
+            if not self.share_p3_patches:
+                patches_p3 = image2patches(x, patch_ref=_p3, transformation=('b c (hg h) (wg w) -> b (c hg wg) h w')) if self.split else x
+            _p3 = torch.cat((_p3, self.ipt_blk4(patches_p3)), 1)
             
         p3 = self.decoder_block3(_p3)
         m3 = self.conv_ms_spvn_3(p3) if self.ms_supervision and self.training else None

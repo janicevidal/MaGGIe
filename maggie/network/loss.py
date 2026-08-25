@@ -5,6 +5,66 @@ from torch.autograd import Variable
 from torch.nn import functional as F
 # from pudb.remote import set_trace
 
+
+def hybrid_e_loss(pred, mask, kernel_size=31, boundary_factor=5.0,
+                  eps=1e-8):
+    """Boundary-aware BCE, enhanced-alignment, and weighted IoU loss.
+
+    Args:
+        pred: Binary foreground logits in ``(B, C, H, W)`` format.
+        mask: Binary targets with the same shape as ``pred``.
+        kernel_size: Odd averaging kernel used to locate boundary regions.
+        boundary_factor: Additional weight assigned around target boundaries.
+        eps: Numerical stability term.
+
+    The calculation is promoted to float32 under mixed precision because the
+    enhanced-alignment denominator can otherwise underflow for constant masks.
+    """
+    if pred.ndim != 4 or mask.ndim != 4:
+        raise ValueError("hybrid_e_loss expects pred and mask in BCHW format")
+    if pred.shape != mask.shape:
+        raise ValueError("pred and mask must have identical shapes")
+    if kernel_size < 1 or kernel_size % 2 == 0:
+        raise ValueError("kernel_size must be a positive odd number")
+
+    if pred.dtype in (torch.float16, torch.bfloat16):
+        pred = pred.float()
+    mask = mask.to(device=pred.device, dtype=pred.dtype)
+
+    padding = kernel_size // 2
+    local_average = F.avg_pool2d(
+        mask, kernel_size=kernel_size, stride=1, padding=padding)
+    weight = 1 + boundary_factor * torch.abs(local_average - mask)
+
+    pixel_bce = F.binary_cross_entropy_with_logits(
+        pred, mask, reduction='none')
+    weighted_bce = (
+        (weight * pixel_bce).sum(dim=(2, 3)) + eps
+    ) / (weight.sum(dim=(2, 3)) + eps)
+
+    probability = pred.sigmoid()
+    pred_centered = probability - probability.mean(
+        dim=(2, 3), keepdim=True)
+    mask_centered = mask - mask.mean(dim=(2, 3), keepdim=True)
+    alignment = (
+        2.0 * pred_centered * mask_centered + eps
+    ) / (
+        pred_centered.square() + mask_centered.square() + eps
+    )
+    enhanced_alignment = (1 + alignment).square() / 4.0
+    e_loss = 1.0 - enhanced_alignment.mean(dim=(2, 3))
+
+    intersection = (probability * mask * weight).sum(dim=(2, 3))
+    union = ((probability + mask) * weight).sum(dim=(2, 3))
+    weighted_iou = 1.0 - (
+        intersection + 1.0 + eps
+    ) / (
+        union - intersection + 1.0 + eps
+    )
+
+    return (weighted_bce + e_loss + weighted_iou).mean()
+
+
 def _loss_dtSSD(pred, gt, mask):
     b, n_f, _, h, w = pred.shape
     dadt = pred[:, 1:] - pred[:, :-1]

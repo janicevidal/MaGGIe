@@ -107,8 +107,23 @@ CONFIG.model.lambdas_pix_last.bce = 30
 CONFIG.model.lambdas_pix_last.mae = 100
 CONFIG.model.lambdas_pix_last.ssim = 10
 CONFIG.model.pix_loss_weight = 1.0
+CONFIG.model.coarse_semantic_loss_weight = 10.0
 CONFIG.model.gdt_loss_weight = 1.0
 CONFIG.model.use_ddc_loss = False
+
+# Training-only person semantic auxiliary head
+CONFIG.model.semantic_aux = CN({})
+CONFIG.model.semantic_aux.enabled = False
+CONFIG.model.semantic_aux.hidden_channels = 64
+CONFIG.model.semantic_aux.target_threshold = 0.05
+CONFIG.model.semantic_aux.loss_weight = 0.5
+CONFIG.model.semantic_aux.bce_weight = 1.0
+CONFIG.model.semantic_aux.dice_weight = 1.0
+CONFIG.model.semantic_aux.hybrid_e_weight = 0.0
+CONFIG.model.semantic_aux.hybrid_e_kernel_size = 7
+CONFIG.model.semantic_aux.hybrid_e_boundary_factor = 5.0
+CONFIG.model.semantic_aux.hard_negative_weight = 1.0
+CONFIG.model.semantic_aux.hard_negative_ratio = 0.2
 
 # For SHM
 CONFIG.model.shm = CN({})
@@ -143,6 +158,13 @@ dataset.train.binarized_kernel = 30
 dataset.train.downscale_mask_p = 0.5
 dataset.train.mask_dir_name = "masks_matched"
 dataset.train.alpha_dir_name = 'pha'
+
+# For mixed matting and binary-person supervision
+dataset.train.binary_root_dir = ''
+dataset.train.binary_root_dirs = []
+dataset.train.binary_mask_dir_name = 'masks'
+dataset.train.binary_ratio = 0.3
+dataset.train.mixed_epoch_size = 0
 
 # For video augmentation
 dataset.train.clip_length = 8

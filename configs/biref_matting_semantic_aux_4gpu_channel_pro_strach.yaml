@@ -1,0 +1,145 @@
+dataset:
+  test:
+    name: Matting
+    root_dir: /data/xiaoshuai/human_matting/val_0729_resized/
+    short_size: 512
+    alpha_dir_name: alphas
+  train:
+    name: MixedMattingSegmentation
+    root_dir: ''
+    root_dirs: 
+      - /data/xiaoshuai/human_matting/train_0729_resized/
+      - /data/xiaoshuai/human_matting/train_0814_resized/
+    binary_root_dir: ''
+    binary_root_dirs: 
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/fhibe_resized/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/imagematte_resized/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/tianchi/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/supervisely/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/ego_arm_hand/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/come/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/cihp/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/davis/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/sip/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/val/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/ppr_resized/
+    binary_mask_dir_name: masks
+    binary_ratio: 0.5
+    mixed_epoch_size: 0
+    random_state: 2026
+    crop:
+    - 512
+    - 512
+    flip_p: 0.5
+    gamma_p: 0.5
+    add_noise_p: 0.3
+    jpeg_p: 0.1
+    affine_p: 0.8
+    alpha_dir_name: alphas
+
+model:
+  arch: BiRefNetProAux
+  weights: ''
+  sync_bn: true
+  # The mixed batch sampler gives every rank both supervision types, so all
+  # trainable branches participate in every distributed step.
+  having_unused_params: false
+  encoder: star_matting
+  encoder_args:
+    embed_dims: 20
+    num_layers: [2, 3, 5, 2]
+    prm_ratio: [1, 2, 2, 2]
+    dr_ratio: [1, 2, 2, 4]
+    structure: 'TE'
+  decoder: biref_decoder
+  decoder_args:
+    in_channels: [160, 100, 40, 20]
+    ipt_channels: [48, 48, 32, 16, 8]
+    out_channels: [160, 96, 48, 24]
+    ms_supervision: true
+    dec_ipt: true
+    out_ref: true
+
+  semantic_aux:
+    enabled: true
+    hidden_channels: 32
+    target_threshold: 0.2
+    loss_weight: 0.5
+    # Hybrid E already contains weighted BCE and weighted IoU. Disable the
+    # overlapping plain BCE/Dice terms and retain a lighter hard-background
+    # term for grass, branches, shadows, and other person-like false positives.
+    bce_weight: 0.0
+    dice_weight: 0.0
+    hybrid_e_weight: 1.0
+    # The loss uses full-resolution logits. Kernel 29 keeps approximately the
+    # same boundary context as kernel 7 did at quarter resolution.
+    hybrid_e_kernel_size: 29
+    hybrid_e_boundary_factor: 5.0
+    hard_negative_weight: 0.5
+    hard_negative_ratio: 0.2
+
+  lambdas_pix_last:
+    bce: 0
+    mae: 30
+    ssim: 10
+
+  pix_loss_weight: 0.5
+  # MODNet-style blurred MSE on native x32 and x16 predictions.
+  coarse_semantic_loss_weight: 30.0
+  gdt_loss_weight: 0.1
+  loss_alpha_grad_w: 300.0
+  loss_alpha_lap_w: 100.0
+  loss_alpha_gradun_w: 10.0
+  loss_alpha_lapun_w: 4.0
+  use_ddc_loss: false
+
+name: biref_matting_semantic_aux_4gpu_channel_pro_strach
+output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints
+test:
+  batch_size: 1
+  log_iter: 500
+  metrics:
+  - MAD
+  - MSE
+  - SAD
+  num_workers: 4
+  postprocessing: false
+  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/biref_matting_semantic_aux_results
+  save_results: true
+train:
+  batch_size: 64
+  log_iter: 50
+  max_iter: 150000
+  num_workers: 16
+  optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    lr: 0.001
+    momentum: 0.9
+    name: adamw
+    weight_decay: 0.01
+  gradient_clipping:
+    enabled: false
+  resume: ''
+  resume_last: false
+  scheduler:
+    name: warmup_decay_multi
+    warmup_iters: 500
+    warmup_factor: 0.001
+    delay_iters: 50000
+    decay_steps: [150000]
+    peak_scale: 0.7
+    eta_min: 0.00001
+  seed: 1234
+  val_best_metric: MAD
+  val_dist: true
+  val_iter: 500
+  val_metrics:
+  - MAD
+  - MSE
+  - SAD
+  vis_iter: 500
+tensorboard:
+  use: true
+  log_dir: tensorboard

@@ -2,6 +2,10 @@ from .him import HIMDataset
 from .vim import VIMDataset
 from .human_matting import MattingDataset
 from .binary_segmentation import BinarySegmentationDataset
+from .mixed_supervision import (
+    MixedSupervisionBatchSampler,
+    MixedSupervisionDataset,
+)
 
 
 def build_dataset(cfg, is_train=True, random_seed=0):
@@ -47,6 +51,34 @@ def build_dataset(cfg, is_train=True, random_seed=0):
                 root_dir=root_dir, split=cfg.split,
                 short_size=cfg.short_size, is_train=is_train,
                 mask_dir_name=cfg.mask_dir_name)
+    elif cfg.name == "MixedMattingSegmentation":
+        if not is_train:
+            raise ValueError(
+                "MixedMattingSegmentation is only supported for training")
+        matting_root = cfg.root_dirs if cfg.root_dirs else cfg.root_dir
+        binary_root = (
+            cfg.binary_root_dirs if cfg.binary_root_dirs
+            else cfg.binary_root_dir)
+        matting_dataset = MattingDataset(
+            root_dir=matting_root, split=cfg.split,
+            short_size=cfg.short_size, crop=cfg.crop, is_train=True,
+            random_seed=random_seed, alpha_dir_name=cfg.alpha_dir_name,
+            padding_crop_p=cfg.padding_crop_p, flip_p=cfg.flip_p,
+            gamma_p=cfg.gamma_p, add_noise_p=cfg.add_noise_p,
+            jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p)
+        binary_dataset = BinarySegmentationDataset(
+            root_dir=binary_root, split=cfg.split,
+            short_size=cfg.short_size, crop=cfg.crop, is_train=True,
+            random_seed=random_seed + 1,
+            mask_dir_name=cfg.binary_mask_dir_name,
+            padding_crop_p=cfg.padding_crop_p, flip_p=cfg.flip_p,
+            gamma_p=cfg.gamma_p, add_noise_p=cfg.add_noise_p,
+            jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p)
+        dataset = MixedSupervisionDataset(
+            matting_dataset, binary_dataset,
+            binary_ratio=cfg.binary_ratio,
+            epoch_size=cfg.mixed_epoch_size,
+            random_seed=random_seed)
     else:
         raise NotImplementedError
     return dataset

@@ -92,7 +92,8 @@ def resize_dataset(image_dir, mask_dir, output_root, target_size=768,
                 
             if new_size != (w, h):
                 img_resized = img.resize(new_size, resample)
-                mask_resized = mask.resize(new_size, resample)
+                # mask_resized = mask.resize(new_size, resample)
+                mask_resized = mask.resize(new_size, Image.Resampling.NEAREST)
             else:
                 img_resized = img
                 mask_resized = mask

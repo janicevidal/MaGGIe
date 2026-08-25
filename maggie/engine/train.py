@@ -10,7 +10,11 @@ import torchvision.utils as vutils
 from torch.utils import data as torch_data
 from torch.cuda.amp import autocast, GradScaler
 
-from maggie.dataloader import build_dataset
+from maggie.dataloader import (
+    MixedSupervisionBatchSampler,
+    MixedSupervisionDataset,
+    build_dataset,
+)
 from maggie.network import build_model
 from maggie.utils.metric import build_metric
 
@@ -59,6 +63,8 @@ def wandb_log_image(batch, output, iter):
     
     if 'alpha_pred' in output:
         log_images.append(log_alpha(output['alpha_pred'], 'alpha_pred', index, inst_index))
+    if 'semantic_pred' in output:
+        log_images.append(log_alpha(output['semantic_pred'], 'semantic_pred', index, inst_index))
 
     wandb.log({"examples/all": log_images}, commit=True)
 
@@ -75,11 +81,13 @@ def tensorboard_log_image(batch, output, iter, writer, n_samples=5):
     img_list = []
     alpha_gt_list = []
     alpha_pred_list = []
+    semantic_pred_list = []
 
     mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
     
     alpha_pred_out = output.get('alpha_pred', None)
+    semantic_pred_out = output.get('semantic_pred', None)
 
     for i in range(n):
         img = images[i].cpu()
@@ -96,12 +104,22 @@ def tensorboard_log_image(batch, output, iter, writer, n_samples=5):
             alpha_pred = torch.clamp(alpha_pred, 0, 1)
             alpha_pred = alpha_pred.unsqueeze(0).repeat(3, 1, 1)
             alpha_pred_list.append(alpha_pred)
+
+        if semantic_pred_out is not None:
+            semantic_pred = semantic_pred_out[i, 0].detach().cpu()
+            semantic_pred = torch.clamp(semantic_pred, 0, 1)
+            semantic_pred = semantic_pred.unsqueeze(0).repeat(3, 1, 1)
+            semantic_pred_list.append(semantic_pred)
     
     if alpha_pred_list:
         grid_img = vutils.make_grid(img_list, nrow=n, pad_value=1)
         grid_gt = vutils.make_grid(alpha_gt_list, nrow=n, pad_value=1)
         grid_pred = vutils.make_grid(alpha_pred_list, nrow=n, pad_value=1)
-        final_grid = torch.cat([grid_img, grid_gt, grid_pred], dim=1)
+        grids = [grid_img, grid_gt]
+        if semantic_pred_list:
+            grids.append(vutils.make_grid(semantic_pred_list, nrow=n, pad_value=1))
+        grids.append(grid_pred)
+        final_grid = torch.cat(grids, dim=1)
     else:
         grid_img = vutils.make_grid(img_list, nrow=n, pad_value=1)
         grid_gt = vutils.make_grid(alpha_gt_list, nrow=n, pad_value=1)
@@ -188,19 +206,29 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
     train_dataset = build_dataset(cfg.dataset.train, is_train=True, random_seed=cfg.train.seed)
 
     # Create dataloader
-    if is_dist:
-        train_sampler = torch_data.DistributedSampler(train_dataset)
+    if isinstance(train_dataset, MixedSupervisionDataset):
+        train_sampler = MixedSupervisionBatchSampler(
+            train_dataset,
+            batch_size=cfg.train.batch_size,
+            num_replicas=torch.distributed.get_world_size() if is_dist else 1,
+            rank=global_rank if is_dist else 0,
+            seed=cfg.train.seed)
+        train_loader = torch_data.DataLoader(
+            train_dataset, batch_sampler=train_sampler,
+            num_workers=cfg.train.num_workers, pin_memory=True)
     else:
-        train_sampler = None
-    
-    g = torch.Generator()
-    g.manual_seed(cfg.train.seed)
+        if is_dist:
+            train_sampler = torch_data.DistributedSampler(train_dataset)
+        else:
+            train_sampler = None
 
-    train_loader = torch_data.DataLoader(
-        train_dataset, batch_size=cfg.train.batch_size, shuffle=(train_sampler is None),
-        num_workers=cfg.train.num_workers,
-        pin_memory=True, sampler=train_sampler,
-        generator=g)
+        g = torch.Generator()
+        g.manual_seed(cfg.train.seed)
+        train_loader = torch_data.DataLoader(
+            train_dataset, batch_size=cfg.train.batch_size,
+            shuffle=(train_sampler is None),
+            num_workers=cfg.train.num_workers,
+            pin_memory=True, sampler=train_sampler, generator=g)
     
     logging.info("Creating val dataset...")
     val_dataset = build_dataset(cfg.dataset.test, is_train=False)
@@ -291,12 +319,10 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
     
     end_time = time.time()
     while iter < cfg.train.max_iter:
-        
-        for _, batch in enumerate(train_loader):
-            
-            if is_dist:
-                train_sampler.set_epoch(epoch)
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
 
+        for _, batch in enumerate(train_loader):
             data_time_val = time.time() - end_time
             data_time_buffer.update(data_time_val)
 
