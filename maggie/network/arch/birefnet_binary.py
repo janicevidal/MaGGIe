@@ -6,7 +6,7 @@ from yacs.config import CfgNode
 
 from ..decoder import *
 from ..encoder import *
-from ..loss import hybrid_e_loss
+from ..loss import hybrid_e_loss, SSIMLoss
 
 
 class BiRefNetBinary(nn.Module, PyTorchModelHubMixin):
@@ -35,6 +35,7 @@ class BiRefNetBinary(nn.Module, PyTorchModelHubMixin):
             raise ValueError(
                 "BiRefNetBinary requires decoder_args.out_ref=false")
         self.decoder = eval(cfg.decoder)(**decoder_args)
+        self.ssim_loss = SSIMLoss()
 
         self.decoder.apply(self._init_weights)
         if hasattr(self.encoder, 'init_weights'):
@@ -127,6 +128,7 @@ class BiRefNetBinary(nn.Module, PyTorchModelHubMixin):
             final_logits, target,
             kernel_size=self.loss_cfg.hybrid_e_kernel_size,
             boundary_factor=self.loss_cfg.hybrid_e_boundary_factor)
+        final_ssim = self.ssim_loss(final_logits.sigmoid(), target)
         hard_background = self._hard_negative_loss(
             final_logits, target, self.loss_cfg.hard_negative_ratio)
 
@@ -134,12 +136,14 @@ class BiRefNetBinary(nn.Module, PyTorchModelHubMixin):
             self.loss_cfg.coarse_bce_weight * coarse_bce +
             self.loss_cfg.coarse_dice_weight * coarse_dice +
             self.loss_cfg.hybrid_e_weight * hybrid +
+            self.loss_cfg.final_ssim_weight * final_ssim +
             self.loss_cfg.hard_negative_weight * hard_background)
         return {
-            'binary_coarse_bce': coarse_bce,
-            'binary_coarse_dice': coarse_dice,
-            'binary_hybrid_e': hybrid,
-            'binary_hard_bg': hard_background,
+            'coarse_bce': coarse_bce,
+            'coarse_dice': coarse_dice,
+            'hybrid_e': hybrid,
+            'ssim': final_ssim,
+            'hard_bg': hard_background,
             'total': total,
         }
 

@@ -70,6 +70,8 @@ CONFIG.test.log_iter = 50
 # ------------------------ Model ------------------------
 CONFIG.model = CN({})
 CONFIG.model.weights = ''
+# Load only model.encoder from model.weights during training. Decoder and auxiliary heads retain their initialization. This does not affect resume.
+CONFIG.model.load_encoder_only = False
 CONFIG.model.arch = 'MaGGIe'
 CONFIG.model.sync_bn = True
 CONFIG.model.having_unused_params = False
@@ -139,6 +141,9 @@ dataset.train = CN({})
 dataset.train.name = 'VIM'
 dataset.train.root_dir = ''
 dataset.train.root_dirs = []
+# Per-root epoch sampling fractions aligned with root_dirs. For example, 1.0
+# uses the full root and 0.3 uses about 30 percent. Empty uses every sample.
+dataset.train.root_sampling_rates = []
 dataset.train.split = 'train'
 
 dataset.train.short_size = 768
@@ -157,12 +162,15 @@ dataset.train.affine_p = 0.1
 dataset.train.binarized_kernel = 30
 dataset.train.downscale_mask_p = 0.5
 dataset.train.mask_dir_name = "masks_matched"
+dataset.train.mask_threshold = 0
 dataset.train.alpha_dir_name = 'pha'
 
 # For mixed matting and binary-person supervision
 dataset.train.binary_root_dir = ''
 dataset.train.binary_root_dirs = []
+dataset.train.binary_root_sampling_rates = []
 dataset.train.binary_mask_dir_name = 'masks'
+dataset.train.binary_mask_threshold = 0
 dataset.train.binary_ratio = 0.3
 dataset.train.mixed_epoch_size = 0
 
@@ -180,6 +188,7 @@ dataset.test.short_size = 768
 dataset.test.downscale_mask = True
 dataset.test.alpha_dir_name = "alphas"
 dataset.test.mask_dir_name = "masks_matched"
+dataset.test.mask_threshold = 0
 
 # For video size
 dataset.test.clip_length = 8

@@ -11,6 +11,8 @@ from torch.utils import data as torch_data
 from torch.cuda.amp import autocast, GradScaler
 
 from maggie.dataloader import (
+    BinarySegmentationBatchSampler,
+    BinarySegmentationDataset,
     MixedSupervisionBatchSampler,
     MixedSupervisionDataset,
     build_dataset,
@@ -159,6 +161,43 @@ def load_state_dict(model, state_dict):
     
     return missing_keys, unexpected_keys, mismatch_keys
 
+
+def load_encoder_state_dict(model, state_dict):
+    """Load ``encoder.*`` tensors from a raw full-model state dict."""
+    if not hasattr(model, 'encoder'):
+        raise AttributeError(
+            f"{type(model).__name__} has no 'encoder' module")
+    if not isinstance(state_dict, dict):
+        raise TypeError(
+            f"State dict must be a dict, got {type(state_dict).__name__}")
+
+    prefix = 'encoder.'
+    encoder_state_dict = {
+        name[len(prefix):]: param
+        for name, param in state_dict.items()
+        if name.startswith(prefix)
+    }
+    if not encoder_state_dict:
+        raise ValueError(
+            "No 'encoder.*' parameters found in model.weights")
+
+    missing_keys, unexpected_keys, mismatch_keys = load_state_dict(
+        model.encoder, encoder_state_dict)
+    loaded_count = (
+        len(encoder_state_dict) - len(unexpected_keys) - len(mismatch_keys))
+    if loaded_count == 0:
+        raise ValueError(
+            "No shape-compatible encoder parameters found in model.weights")
+    return loaded_count, missing_keys, unexpected_keys, mismatch_keys
+
+
+def log_key_examples(label, keys, limit=20):
+    if not keys:
+        return
+    examples = keys[:limit]
+    suffix = '' if len(keys) <= limit else f' ... (+{len(keys) - limit} more)'
+    logging.warning('%s (%d): %s%s', label, len(keys), examples, suffix)
+
 def load_resume_model(model, optimizer, lr_scheduler, resume_path, device):
     logging.info("Resuming model from {}".format(resume_path))
     if not os.path.exists(os.path.join(resume_path, 'last_model.pth')) or not os.path.exists(os.path.join(resume_path, 'last_opt.pth')):
@@ -216,6 +255,21 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
         train_loader = torch_data.DataLoader(
             train_dataset, batch_sampler=train_sampler,
             num_workers=cfg.train.num_workers, pin_memory=True)
+    elif (isinstance(train_dataset, BinarySegmentationDataset) and
+          train_dataset.uses_root_sampling_rates):
+        train_sampler = BinarySegmentationBatchSampler(
+            train_dataset,
+            batch_size=cfg.train.batch_size,
+            num_replicas=torch.distributed.get_world_size() if is_dist else 1,
+            rank=global_rank if is_dist else 0,
+            seed=cfg.train.seed)
+        train_loader = torch_data.DataLoader(
+            train_dataset, batch_sampler=train_sampler,
+            num_workers=cfg.train.num_workers, pin_memory=True)
+        logging.info(
+            "Root sampling effective epoch size: %d, global batch size: %d",
+            train_sampler.effective_num_samples,
+            cfg.train.batch_size * train_sampler.num_replicas)
     else:
         if is_dist:
             train_sampler = torch_data.DistributedSampler(train_dataset)
@@ -266,13 +320,29 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
     if os.path.isfile(cfg.model.weights):
         logging.info("Loading pretrained model from {}".format(cfg.model.weights))
         state_dict = torch.load(cfg.model.weights, map_location=device)
-        missing_keys, unexpected_keys, mismatch_keys = load_state_dict(model if not is_dist else model.module, state_dict)
-        if len(missing_keys) > 0:
-            logging.warn("Missing keys: {}".format(missing_keys))
-        if len(unexpected_keys) > 0:
-            logging.warn("Unexpected keys: {}".format(unexpected_keys))
-        if len(mismatch_keys) > 0:
-            logging.warn("Mismatch keys: {}".format(mismatch_keys))
+        load_model = model if not is_dist else model.module
+        if cfg.model.load_encoder_only:
+            (loaded_count, missing_keys, unexpected_keys,
+             mismatch_keys) = load_encoder_state_dict(load_model, state_dict)
+            logging.info(
+                "Loaded encoder only: loaded=%d/%d, missing=%d, "
+                "unexpected=%d, mismatch=%d",
+                loaded_count,
+                len(load_model.encoder.state_dict()),
+                len(missing_keys),
+                len(unexpected_keys),
+                len(mismatch_keys))
+            log_key_examples('Missing encoder keys', missing_keys)
+            log_key_examples(
+                'Unexpected encoder checkpoint keys', unexpected_keys)
+            log_key_examples(
+                'Shape-mismatched encoder keys', mismatch_keys)
+        else:
+            missing_keys, unexpected_keys, mismatch_keys = load_state_dict(
+                load_model, state_dict)
+            log_key_examples("Missing keys", missing_keys)
+            log_key_examples("Unexpected keys", unexpected_keys)
+            log_key_examples("Mismatch keys", mismatch_keys)
 
     # Resume model from a checkpoint
     if cfg.train.resume != '' or cfg.train.resume_last:

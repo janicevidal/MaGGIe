@@ -1,7 +1,10 @@
 from .him import HIMDataset
 from .vim import VIMDataset
 from .human_matting import MattingDataset
-from .binary_segmentation import BinarySegmentationDataset
+from .binary_segmentation import (
+    BinarySegmentationBatchSampler,
+    BinarySegmentationDataset,
+)
 from .mixed_supervision import (
     MixedSupervisionBatchSampler,
     MixedSupervisionDataset,
@@ -43,6 +46,8 @@ def build_dataset(cfg, is_train=True, random_seed=0):
                 short_size=cfg.short_size, crop=cfg.crop,
                 is_train=is_train, random_seed=random_seed,
                 mask_dir_name=cfg.mask_dir_name,
+                mask_threshold=cfg.mask_threshold,
+                root_sampling_rates=getattr(cfg, 'root_sampling_rates', []),
                 padding_crop_p=cfg.padding_crop_p, flip_p=cfg.flip_p,
                 gamma_p=cfg.gamma_p, add_noise_p=cfg.add_noise_p,
                 jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p)
@@ -50,7 +55,8 @@ def build_dataset(cfg, is_train=True, random_seed=0):
             dataset = BinarySegmentationDataset(
                 root_dir=root_dir, split=cfg.split,
                 short_size=cfg.short_size, is_train=is_train,
-                mask_dir_name=cfg.mask_dir_name)
+                mask_dir_name=cfg.mask_dir_name,
+                mask_threshold=cfg.mask_threshold)
     elif cfg.name == "MixedMattingSegmentation":
         if not is_train:
             raise ValueError(
@@ -71,6 +77,9 @@ def build_dataset(cfg, is_train=True, random_seed=0):
             short_size=cfg.short_size, crop=cfg.crop, is_train=True,
             random_seed=random_seed + 1,
             mask_dir_name=cfg.binary_mask_dir_name,
+            mask_threshold=cfg.binary_mask_threshold,
+            root_sampling_rates=getattr(
+                cfg, 'binary_root_sampling_rates', []),
             padding_crop_p=cfg.padding_crop_p, flip_p=cfg.flip_p,
             gamma_p=cfg.gamma_p, add_noise_p=cfg.add_noise_p,
             jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p)

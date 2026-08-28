@@ -1117,7 +1117,7 @@ class RandomAffineCrop(object):
             
             width_scale = self.crop_w / W
             height_scale = self.crop_h / H
-            if self.random.rand() < 0.5:
+            if self.random.rand() < 0.7:
                 # Keep the whole image inside the output crop.
                 base_scale = min(width_scale, height_scale)
             else:

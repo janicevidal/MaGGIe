@@ -4,6 +4,11 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, Sampler
 
+from .binary_segmentation import (
+    build_sampling_schedule,
+    infinite_shuffled,
+)
+
 
 class MixedSupervisionDataset(Dataset):
     """Mix matting and binary samples behind one collatable interface.
@@ -27,9 +32,10 @@ class MixedSupervisionDataset(Dataset):
         self.binary_ratio = binary_ratio
 
         if epoch_size <= 0:
+            binary_size = binary_dataset.effective_epoch_size()
             epoch_size = max(
                 math.ceil(len(matting_dataset) / (1 - binary_ratio)),
-                math.ceil(len(binary_dataset) / binary_ratio))
+                math.ceil(binary_size / binary_ratio))
         self.epoch_size = int(epoch_size)
 
         random = np.random.RandomState(random_seed)
@@ -72,7 +78,13 @@ class MixedSupervisionDataset(Dataset):
         return self.epoch_size
 
     def __getitem__(self, index):
-        is_matting, sample_index = self.samples[index]
+        # The root-aware batch sampler passes a tagged underlying index so it
+        # can choose a binary root before choosing a frame. Plain integer
+        # indexing remains available for compatibility and inspection.
+        if isinstance(index, tuple):
+            is_matting, sample_index = index
+        else:
+            is_matting, sample_index = self.samples[index]
         if is_matting:
             sample = self.matting_dataset[sample_index]
             target = sample['alpha']
@@ -117,14 +129,9 @@ class MixedSupervisionBatchSampler(Sampler):
         self.seed = int(seed)
         self.epoch = 0
 
-        self.matting_indices = [
-            index for index, (is_matting, _) in enumerate(dataset.samples)
-            if is_matting
-        ]
-        self.binary_indices = [
-            index for index, (is_matting, _) in enumerate(dataset.samples)
-            if not is_matting
-        ]
+        self.matting_indices = list(range(len(dataset.matting_dataset)))
+        self.binary_groups, self.binary_rates = (
+            dataset.binary_dataset.sampling_groups())
         self.num_binary = min(
             max(int(round(batch_size * dataset.binary_ratio)), 1),
             batch_size - 1)
@@ -136,35 +143,39 @@ class MixedSupervisionBatchSampler(Sampler):
     def set_epoch(self, epoch):
         self.epoch = int(epoch)
 
-    @staticmethod
-    def _infinite_shuffled(indices, random):
-        while True:
-            for index in random.permutation(indices).tolist():
-                yield index
-
     def __iter__(self):
         random = np.random.RandomState(self.seed + self.epoch)
-        matting_pool = self._infinite_shuffled(
-            self.matting_indices, random)
-        binary_pool = self._infinite_shuffled(
-            self.binary_indices, random)
+        matting_pool = infinite_shuffled(self.matting_indices, random)
+        binary_pools = [
+            infinite_shuffled(group, random) for group in self.binary_groups
+        ]
+        num_global_binary = (
+            self.num_batches * self.num_binary * self.num_replicas)
+        binary_schedule = build_sampling_schedule(
+            self.binary_rates, num_global_binary, random,
+            batch_size=self.num_binary * self.num_replicas)
 
-        for _ in range(self.num_batches):
+        for batch_index in range(self.num_batches):
             global_matting = [
                 next(matting_pool)
                 for _ in range(self.num_matting * self.num_replicas)
             ]
+            schedule_start = (
+                batch_index * self.num_binary * self.num_replicas)
+            group_ids = binary_schedule[
+                schedule_start:
+                schedule_start + self.num_binary * self.num_replicas
+            ]
             global_binary = [
-                next(binary_pool)
-                for _ in range(self.num_binary * self.num_replicas)
+                next(binary_pools[group_id]) for group_id in group_ids
             ]
             matting_start = self.rank * self.num_matting
             binary_start = self.rank * self.num_binary
             local_batch = (
-                global_matting[
-                    matting_start:matting_start + self.num_matting] +
-                global_binary[
-                    binary_start:binary_start + self.num_binary]
+                [(True, index) for index in global_matting[
+                    matting_start:matting_start + self.num_matting]] +
+                [(False, index) for index in global_binary[
+                    binary_start:binary_start + self.num_binary]]
             )
             random.shuffle(local_batch)
             yield local_batch
