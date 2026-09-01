@@ -69,24 +69,63 @@ from maggie.utils.metric import build_metric
 
 @torch.no_grad()
 def save_visualization(image_names, alpha_names, alphas, transform_info, output, save_dir):
-    alpha_name = alpha_names[0][0]
-    image_name = image_names[0][0]
-    
-    img = cv2.imread(image_name)
+    """Save the first item in an evaluation batch.
 
-    # Save alpha pred
+    Binary models return ``alpha_pred`` with shape ``(B, 1, H, W)``.  The
+    previous implementation passed ``(1, H, W)`` directly to ``cv2.imwrite``
+    and used the channel dimension when creating the composite image.  OpenCV
+    expects a 2-D array for a single-channel image, so squeeze the batch and
+    channel dimensions explicitly here.
+    """
+    def _first_path(paths):
+        # DataLoader's default collate turns the dataset's one-element path
+        # list into nested lists/tuples: [["path"]].
+        while isinstance(paths, (list, tuple)):
+            if not paths:
+                return None
+            paths = paths[0]
+        return paths
+
+    alpha_name = _first_path(alpha_names)
+    image_name = _first_path(image_names)
+    if alpha_name is None or image_name is None:
+        logging.warning("Skip visualization: missing image or mask path")
+        return
+
+    img = cv2.imread(image_name, cv2.IMREAD_COLOR)
+    if img is None:
+        logging.warning("Skip visualization: cannot decode image %s", image_name)
+        return
+
+    alpha_array = np.asarray(alphas)
+    # Expected shape is (B, 1, H, W); support (B, H, W) and (H, W) too.
+    if alpha_array.ndim == 4:
+        alpha_map = alpha_array[0, 0]
+    elif alpha_array.ndim == 3:
+        alpha_map = alpha_array[0]
+    elif alpha_array.ndim == 2:
+        alpha_map = alpha_array
+    else:
+        raise ValueError(
+            "Expected a single 2-D alpha map for visualization, got shape "
+            f"{alpha_array.shape}")
+    alpha_map = np.clip(alpha_map.astype(np.float32), 0.0, 1.0)
+
+    # Save binary/alpha prediction as a genuine single-channel image.
     os.makedirs(save_dir, exist_ok=True)
-    alpha_pred = (alphas * 255).astype('uint8')
-        
     target_path = os.path.join(save_dir, os.path.basename(alpha_name))
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    cv2.imwrite(target_path, alpha_pred[0])
-    
-    comp = img * alphas[0][..., None] + 1.0 * (1 - alphas[0][..., None])
-    comp = comp.astype(np.uint8)
+    cv2.imwrite(target_path, np.ascontiguousarray(alpha_map * 255).astype('uint8'))
+
+    # Keep the original image resolution for the overlay.
+    if alpha_map.shape != img.shape[:2]:
+        alpha_map = cv2.resize(alpha_map, (img.shape[1], img.shape[0]),
+                               interpolation=cv2.INTER_LINEAR)
+    comp = img.astype(np.float32) * alpha_map[..., None] + (1.0 - alpha_map[..., None])
+    comp = np.clip(comp, 0, 255).astype(np.uint8)
     target_path = os.path.join(save_dir, os.path.basename(image_name))
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    cv2.imwrite(target_path, comp)
+    cv2.imwrite(target_path, np.ascontiguousarray(comp))
 
 def compute_metrics(all_preds, all_trimap, all_gts, val_error_dict, device, prev_preds=None, prev_trimap=None, prev_gts=None):
     current_metrics = {}

@@ -87,6 +87,28 @@ class BiRefNetBinary(nn.Module, PyTorchModelHubMixin):
             return torch.stack(sample_losses).mean()
         return logits.sum() * 0
 
+    @staticmethod
+    def _focal_loss(logits, target, gamma=1.5, alpha=0.5):
+        """Binary focal loss on logits, returned as a scalar.
+
+        ``alpha`` is the positive-class weight.  Set it to a negative value
+        to disable alpha balancing and use only the focal modulation.  The
+        implementation uses logits directly for numerical stability.
+        """
+        if gamma < 0:
+            raise ValueError("focal gamma must be non-negative")
+        bce = F.binary_cross_entropy_with_logits(
+            logits, target, reduction='none')
+        probability = logits.sigmoid()
+        p_t = probability * target + (1.0 - probability) * (1.0 - target)
+        focal_weight = (1.0 - p_t).pow(gamma)
+        if alpha is not None and alpha >= 0:
+            if alpha > 1:
+                raise ValueError("focal alpha must be in [0, 1] or negative")
+            alpha_t = alpha * target + (1.0 - alpha) * (1.0 - target)
+            focal_weight = focal_weight * alpha_t
+        return (focal_weight * bce).mean()
+
     def _prepare_target(self, target):
         if target.ndim == 3:
             target = target.unsqueeze(1)
@@ -129,20 +151,41 @@ class BiRefNetBinary(nn.Module, PyTorchModelHubMixin):
             kernel_size=self.loss_cfg.hybrid_e_kernel_size,
             boundary_factor=self.loss_cfg.hybrid_e_boundary_factor)
         final_ssim = self.ssim_loss(final_logits.sigmoid(), target)
-        hard_background = self._hard_negative_loss(
-            final_logits, target, self.loss_cfg.hard_negative_ratio)
+        focal_enabled = self.loss_cfg.get('focal_enabled', False)
+        if focal_enabled and self.loss_cfg.get('focal_weight', 0.0) > 0:
+            focal = self._focal_loss(
+                final_logits,
+                target,
+                gamma=self.loss_cfg.get('focal_gamma', 1.5),
+                alpha=self.loss_cfg.get('focal_alpha', 0.5))
+        else:
+            # Keep a stable loss dictionary for old logging/checkpoint flows.
+            focal = zero
+        # Default to enabled so configs created before this switch preserve
+        # their original training behaviour.  Keep a zero-valued hard_bg item
+        # when disabled to maintain a stable loss/logging interface.
+        hard_negative_enabled = self.loss_cfg.get(
+            'hard_negative_enabled', True)
+        if (hard_negative_enabled and
+                self.loss_cfg.hard_negative_weight > 0):
+            hard_background = self._hard_negative_loss(
+                final_logits, target, self.loss_cfg.hard_negative_ratio)
+        else:
+            hard_background = zero
 
         total = self.loss_cfg.loss_weight * (
             self.loss_cfg.coarse_bce_weight * coarse_bce +
             self.loss_cfg.coarse_dice_weight * coarse_dice +
             self.loss_cfg.hybrid_e_weight * hybrid +
             self.loss_cfg.final_ssim_weight * final_ssim +
-            self.loss_cfg.hard_negative_weight * hard_background)
+            self.loss_cfg.hard_negative_weight * hard_background +
+            self.loss_cfg.get('focal_weight', 0.0) * focal)
         return {
             'coarse_bce': coarse_bce,
             'coarse_dice': coarse_dice,
             'hybrid_e': hybrid,
             'ssim': final_ssim,
+            'focal': focal,
             'hard_bg': hard_background,
             'total': total,
         }

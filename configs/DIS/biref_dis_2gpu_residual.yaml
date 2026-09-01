@@ -4,7 +4,7 @@ dataset:
     root_dir: /data/xiaoshuai/human_matting/dichotomous_dataset/_val/
     short_size: 512
     mask_dir_name: masks
-    mask_threshold: 85
+    mask_threshold: 127
   train:
     name: BinarySegmentation
     root_dir: ''
@@ -37,12 +37,12 @@ dataset:
     jpeg_p: 0.1
     affine_p: 0.8
     mask_dir_name: masks
-    mask_threshold: 85
+    mask_threshold: 127
 
 model:
   arch: BiRefNetBinary
-  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/biref_matting_semantic_aux_4gpu_channel_pro_strach/last_model.pth
-  load_encoder_only: true
+  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/biref_dis_2gpu/model_iter150000.pth
+  load_encoder_only: false
   sync_bn: true
   having_unused_params: false
   encoder: star_matting
@@ -63,7 +63,7 @@ model:
     share_p3_patches: true
 
     binary_loss:
-      target_threshold: 0.333
+      target_threshold: 0.5
       loss_weight: 1.0
       # Coarse decoder outputs are x32, x16, and x8.
       scale_weights: [0.125, 0.25, 0.5]
@@ -78,11 +78,10 @@ model:
       focal_weight: 0.25
       focal_gamma: 1.5
       focal_alpha: 0.5
-      hard_negative_enabled: true
-      hard_negative_weight: 0.2
-      hard_negative_ratio: 0.1
+      hard_negative_enabled: false
+      hard_negative_weight: 0.0
 
-name: biref_dis_2gpu
+name: biref_dis_2gpu_residual
 output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis
 test:
   batch_size: 1
@@ -109,7 +108,7 @@ test:
 train:
   batch_size: 64
   log_iter: 50
-  max_iter: 150000
+  max_iter: 80000
   num_workers: 16
   optimizer:
     betas: [0.9, 0.999]
@@ -119,14 +118,14 @@ train:
     weight_decay: 0.01
   gradient_clipping:
     enabled: false
-  resume: ''
-  resume_last: false
+  resume: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/biref_dis_2gpu_residual/
+  resume_last: true
   scheduler:
     name: warmup_decay_multi
     warmup_iters: 500
     warmup_factor: 0.001
-    delay_iters: 50000
-    decay_steps: [150000]
+    delay_iters: 1000
+    decay_steps: [80000]
     peak_scale: 0.7
     eta_min: 0.00001
   seed: 1234
@@ -138,6 +137,7 @@ train:
   - Precision
   - Recall
   - MAE
+  - BIoU
   vis_iter: 500
 tensorboard:
   use: true

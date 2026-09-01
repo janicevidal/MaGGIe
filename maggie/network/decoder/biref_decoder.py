@@ -75,6 +75,18 @@ class ReconBlock(nn.Module):
             ),
             nn.BatchNorm2d(out_chans))
 
+        # A learnable shortcut from the pre-normalized concat feature.  The
+        # per-channel scale starts at zero so checkpoints created before this
+        # branch was introduced keep exactly the old forward behaviour when
+        # loaded (the newly added projection is initially gated off).
+        self.residual_proj = nn.Conv2d(
+            in_channels=in_chans,
+            out_channels=out_chans,
+            kernel_size=1,
+            stride=1,
+            padding=0)
+        self.residual_scale = nn.Parameter(torch.zeros(1, out_chans, 1, 1))
+
         for i, dilation in enumerate(self.dilations):
             dilated_kernel_size = (self.kernel_size - 1) * dilation + 1
             padding = math.ceil((dilated_kernel_size - 1) / 2)
@@ -85,6 +97,7 @@ class ReconBlock(nn.Module):
 
     def forward(self, x):
         _, _, H, W = x.size()
+        residual = x
         x = nchw_to_nlc(x)
         x = self.norm(x)
 
@@ -97,6 +110,7 @@ class ReconBlock(nn.Module):
             y += _y
 
         y = self.out_proj(y)
+        y = y + self.residual_scale * self.residual_proj(residual)
 
         return y
 

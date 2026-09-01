@@ -204,10 +204,84 @@ def load_resume_model(model, optimizer, lr_scheduler, resume_path, device):
         raise ValueError("Cannot resume model from {}".format(resume_path))
     state_dict = torch.load(os.path.join(resume_path, 'last_model.pth'), map_location=device)
     opt_dict = torch.load(os.path.join(resume_path, 'last_opt.pth'), map_location=device)
-    model.load_state_dict(state_dict, strict=True)
+    # ReconBlock has a backward-compatible zero-gated residual branch.  Older
+    # checkpoints do not contain its parameters, so accept only those known
+    # additions while still failing on unrelated missing/unexpected keys.
+    missing_keys, unexpected_keys = model.load_state_dict(
+        state_dict, strict=False)
+    allowed_missing = {
+        key for key in missing_keys
+        if '.residual_proj.' in key or key.endswith('.residual_scale')
+    }
+    unhandled_missing = [
+        key for key in missing_keys if key not in allowed_missing
+    ]
+    if unhandled_missing or unexpected_keys:
+        raise RuntimeError(
+            "Incompatible resume checkpoint. Missing keys: {}; "
+            "unexpected keys: {}".format(unhandled_missing, unexpected_keys))
+    if allowed_missing:
+        logging.warning(
+            "Resume checkpoint predates ReconBlock residual branch; "
+            "initialized %d residual keys with zero gating",
+            len(allowed_missing))
     
-    # Load optimizer and lr_scheduler
-    optimizer.load_state_dict(opt_dict['optimizer'])
+    # Load optimizer and lr_scheduler.  Adding residual parameters changes the
+    # optimizer parameter count in old checkpoints.  Transfer the old Adam
+    # states by parameter order/name and leave the new residual parameters
+    # without moments (they will be initialized on their first update).
+    saved_optimizer = opt_dict['optimizer']
+    current_param_groups = optimizer.param_groups
+    saved_param_groups = saved_optimizer.get('param_groups', [])
+    saved_param_count = sum(
+        len(group.get('params', [])) for group in saved_param_groups)
+    current_param_count = sum(len(group['params'])
+                              for group in current_param_groups)
+
+    if saved_param_count == current_param_count:
+        optimizer.load_state_dict(saved_optimizer)
+    else:
+        residual_tokens = ('.residual_proj.', '.residual_scale')
+        named_params = dict(model.named_parameters())
+        # Removing only the newly introduced residual parameters restores the
+        # parameter ordering used by checkpoints from the previous model.
+        compatible_params = [
+            (name, param) for name, param in model.named_parameters()
+            if not any(token in name for token in residual_tokens)
+        ]
+        saved_ids = [
+            param_id for group in saved_param_groups
+            for param_id in group.get('params', [])
+        ]
+        if len(saved_ids) != len(compatible_params):
+            raise RuntimeError(
+                "Optimizer checkpoint has {} parameters, but {} compatible "
+                "model parameters were found after excluding ReconBlock "
+                "residual parameters".format(
+                    len(saved_ids), len(compatible_params)))
+
+        optimizer.state.clear()
+        saved_states = saved_optimizer.get('state', {})
+        for saved_id, (name, _) in zip(saved_ids, compatible_params):
+            if saved_id in saved_states:
+                optimizer.state[named_params[name]] = saved_states[saved_id]
+
+        if len(saved_param_groups) != len(current_param_groups):
+            raise RuntimeError(
+                "Optimizer parameter-group count changed from {} to {}".format(
+                    len(saved_param_groups), len(current_param_groups)))
+        for current_group, saved_group in zip(
+                current_param_groups, saved_param_groups):
+            for key, value in saved_group.items():
+                if key != 'params':
+                    current_group[key] = value
+        logging.warning(
+            "Loaded optimizer state from an older checkpoint: %d old "
+            "parameters, %d new residual parameters initialized without "
+            "optimizer history",
+            saved_param_count, current_param_count - saved_param_count)
+
+    # Load lr_scheduler
     lr_scheduler.load_state_dict(opt_dict['lr_scheduler'])
 
     # Load epoch, iteration, best score
