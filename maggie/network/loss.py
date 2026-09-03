@@ -233,15 +233,29 @@ class LapLoss(torch.nn.Module):
         self.max_levels = max_levels
         self.gauss_kernel = gauss_kernel(channels=channels)
 
+    def build_pyramid(self, image):
+        """Build a Laplacian pyramid for reuse across loss evaluations."""
+        return laplacian_pyramid(
+            img=image,
+            kernel=self.gauss_kernel,
+            max_levels=self.max_levels)
+
     def l1_loss(self, input, target, weight=None):
         if weight is None:
             return F.l1_loss(input, target)
         else:
             return (F.l1_loss(input, target, reduction='none') * weight).sum() / (weight.sum() + 1e-6)
         
-    def forward(self, input, target, weight=None):
-        pyr_input  = laplacian_pyramid(img=input, kernel=self.gauss_kernel, max_levels=self.max_levels)
-        pyr_target = laplacian_pyramid(img=target, kernel=self.gauss_kernel, max_levels=self.max_levels)
+    def forward(self, input, target, weight=None, target_pyramid=None):
+        pyr_input = self.build_pyramid(input)
+        pyr_target = (
+            self.build_pyramid(target)
+            if target_pyramid is None else target_pyramid)
+        if len(pyr_target) != len(pyr_input):
+            raise ValueError(
+                "target_pyramid must contain the same number of levels as "
+                f"the input pyramid ({len(pyr_input)}), got "
+                f"{len(pyr_target)}")
         weights = [None] * len(pyr_input)
         if weight is not None:
             weights = weight_pyramid(weight, max_levels=self.max_levels)

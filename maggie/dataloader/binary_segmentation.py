@@ -17,7 +17,7 @@ class BinarySegmentationDataset(Dataset):
     def __init__(self, root_dir, short_size=768, is_train=False,
                  random_seed=2023, crop=(512, 512), padding_crop_p=0.1,
                  flip_p=0.5, gamma_p=0.3, add_noise_p=0.3, jpeg_p=0.1,
-                 affine_p=0.8, mask_dir_name='masks',
+                 affine_p=0.8, keep_whole_p=0.7, mask_dir_name='masks',
                  root_sampling_rates=None, mask_threshold=0, **kwargs):
         self.root_dir = root_dir
         if isinstance(root_dir, (str, os.PathLike)):
@@ -44,7 +44,7 @@ class BinarySegmentationDataset(Dataset):
                 T.RandomAffineCrop(
                     crop, self.random, p=affine_p,
                     angle_range=(-15, 15), scale_range=(0.85, 1.15),
-                    shift_ratio=0.1),
+                    shift_ratio=0.1, keep_whole_p=keep_whole_p),
                 T.RandomHorizontalFlip(self.random, flip_p),
                 T.GammaContrast(self.random, p=gamma_p),
                 T.AdditiveGaussionNoise(self.random, p=add_noise_p),

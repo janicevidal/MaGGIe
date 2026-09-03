@@ -159,6 +159,7 @@ dataset.train.gamma_p = 0.3
 dataset.train.add_noise_p = 0.3
 dataset.train.jpeg_p = 0.1
 dataset.train.affine_p = 0.1
+dataset.train.keep_whole_p = 0.7
 dataset.train.binarized_kernel = 30
 dataset.train.downscale_mask_p = 0.5
 dataset.train.mask_dir_name = "masks_matched"

@@ -13,6 +13,8 @@ from torch.cuda.amp import autocast, GradScaler
 from maggie.dataloader import (
     BinarySegmentationBatchSampler,
     BinarySegmentationDataset,
+    MattingBatchSampler,
+    MattingDataset,
     MixedSupervisionBatchSampler,
     MixedSupervisionDataset,
     build_dataset,
@@ -72,62 +74,59 @@ def wandb_log_image(batch, output, iter):
 
 
 def tensorboard_log_image(batch, output, iter, writer, n_samples=5):
+    # Older torch TensorBoard integrations still use the alias removed by Pillow 10.
     if not hasattr(Image, 'ANTIALIAS'):
         Image.ANTIALIAS = Image.Resampling.LANCZOS
-    
-    images = batch['image']
-    alphas = batch['alpha']
-    
-    n = min(n_samples, images.shape[0])
-    
-    img_list = []
-    alpha_gt_list = []
-    alpha_pred_list = []
-    semantic_pred_list = []
 
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-    
+    images = batch['image'].detach().cpu()
+    alphas = batch['alpha'].detach().cpu()
     alpha_pred_out = output.get('alpha_pred', None)
     semantic_pred_out = output.get('semantic_pred', None)
 
-    for i in range(n):
-        img = images[i].cpu()
-        img = img * std + mean
-        img = torch.clamp(img, 0, 1).squeeze(0)
-        img_list.append(img)
+    tensors = {
+        'image': images,
+        'alpha': alphas,
+        'alpha_pred': alpha_pred_out,
+        'semantic_pred': semantic_pred_out,
+    }
+    for name, tensor in tensors.items():
+        if tensor is None:
+            continue
+        if tensor.ndim != 4:
+            raise ValueError(
+                f"TensorBoard {name} must be BCHW, got {tuple(tensor.shape)}")
+        if tensor.shape[0] != images.shape[0]:
+            raise ValueError(
+                f"TensorBoard {name} batch size {tensor.shape[0]} does not "
+                f"match image batch size {images.shape[0]}")
 
-        alpha_gt = alphas[i, 0].cpu()
-        alpha_gt = alpha_gt.unsqueeze(0).repeat(3, 1, 1)  # (3, H, W)
-        alpha_gt_list.append(alpha_gt)
+    n = min(int(n_samples), images.shape[0])
+    if n < 1:
+        return
 
-        if alpha_pred_out is not None:
-            alpha_pred = alpha_pred_out[i, 0].detach().cpu()
-            alpha_pred = torch.clamp(alpha_pred, 0, 1)
-            alpha_pred = alpha_pred.unsqueeze(0).repeat(3, 1, 1)
-            alpha_pred_list.append(alpha_pred)
+    mean = images.new_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    std = images.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+    images = (images[:n] * std + mean).clamp(0, 1)
 
-        if semantic_pred_out is not None:
-            semantic_pred = semantic_pred_out[i, 0].detach().cpu()
-            semantic_pred = torch.clamp(semantic_pred, 0, 1)
-            semantic_pred = semantic_pred.unsqueeze(0).repeat(3, 1, 1)
-            semantic_pred_list.append(semantic_pred)
-    
-    if alpha_pred_list:
-        grid_img = vutils.make_grid(img_list, nrow=n, pad_value=1)
-        grid_gt = vutils.make_grid(alpha_gt_list, nrow=n, pad_value=1)
-        grid_pred = vutils.make_grid(alpha_pred_list, nrow=n, pad_value=1)
-        grids = [grid_img, grid_gt]
-        if semantic_pred_list:
-            grids.append(vutils.make_grid(semantic_pred_list, nrow=n, pad_value=1))
-        grids.append(grid_pred)
-        final_grid = torch.cat(grids, dim=1)
-    else:
-        grid_img = vutils.make_grid(img_list, nrow=n, pad_value=1)
-        grid_gt = vutils.make_grid(alpha_gt_list, nrow=n, pad_value=1)
-        final_grid = torch.cat([grid_img, grid_gt], dim=1)
+    def make_grid(tensor):
+        tensor = tensor.detach().cpu()[:n].clamp(0, 1)
+        if tensor.shape[1] == 1:
+            tensor = tensor.repeat(1, 3, 1, 1)
+        elif tensor.shape[1] != 3:
+            raise ValueError(
+                "TensorBoard visualization expects one or three channels, "
+                f"got {tensor.shape[1]}")
+        return vutils.make_grid(tensor, nrow=n, pad_value=1)
+
+    grids = [make_grid(images), make_grid(alphas)]
+    if semantic_pred_out is not None:
+        grids.append(make_grid(semantic_pred_out))
+    if alpha_pred_out is not None:
+        grids.append(make_grid(alpha_pred_out))
+    final_grid = torch.cat(grids, dim=1)
 
     writer.add_image('vis/comparison', final_grid, global_step=iter)
+    writer.flush()
 
 
 def adapt_training_batch(batch):
@@ -300,8 +299,10 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
     
     scalar_writer = None
     image_writer = None
-    if global_rank == 0:
-        tb_root = os.path.join(cfg.output_dir, 'tensorboard')
+    if global_rank == 0 and cfg.tensorboard.use:
+        tb_root = cfg.tensorboard.log_dir
+        if not os.path.isabs(tb_root):
+            tb_root = os.path.join(cfg.output_dir, tb_root)
 
         scalar_dir = os.path.join(tb_root, 'scalars')
         os.makedirs(scalar_dir, exist_ok=True)
@@ -329,9 +330,14 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
         train_loader = torch_data.DataLoader(
             train_dataset, batch_sampler=train_sampler,
             num_workers=cfg.train.num_workers, pin_memory=True)
-    elif (isinstance(train_dataset, BinarySegmentationDataset) and
+    elif (isinstance(train_dataset,
+                     (BinarySegmentationDataset, MattingDataset)) and
           train_dataset.uses_root_sampling_rates):
-        train_sampler = BinarySegmentationBatchSampler(
+        sampler_class = (
+            BinarySegmentationBatchSampler
+            if isinstance(train_dataset, BinarySegmentationDataset)
+            else MattingBatchSampler)
+        train_sampler = sampler_class(
             train_dataset,
             batch_size=cfg.train.batch_size,
             num_replicas=torch.distributed.get_world_size() if is_dist else 1,
@@ -475,7 +481,9 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                 break
 
             batch = adapt_training_batch(batch)
-            batch = {k: v.to(device) for k, v in batch.items()}
+            # DataLoader uses pinned host memory; allow asynchronous H2D copies
+            # so data transfer can overlap with queued GPU work.
+            batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
             batch['iter'] = iter
             optimizer.zero_grad()
             if precision == 16:
@@ -524,10 +532,30 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
             
             # Logging
             if iter % cfg.train.log_iter == 0:
+                # Each rank sees a different local batch. Reduce the rolling
+                # means only at logging intervals so TensorBoard/W&B report
+                # the global training loss without adding an all-reduce to
+                # every optimization step.
+                loss_names = sorted(loss_buffers)
+                log_values = torch.tensor(
+                    [loss_buffers[name].mean() for name in loss_names] +
+                    [grad_norm_buffer.mean()],
+                    dtype=torch.float64,
+                    device=device)
+                if is_dist:
+                    torch.distributed.all_reduce(log_values, op=torch.distributed.ReduceOp.SUM)
+                    log_values /= torch.distributed.get_world_size()
+
+                global_loss_means = {
+                    name: log_values[index].item()
+                    for index, name in enumerate(loss_names)
+                }
+                global_grad_norm = log_values[-1].item()
+
                 log_str = "Epoch: {}, Iter: {}/{}".format(epoch, iter, cfg.train.max_iter)
-                for k, v in loss_buffers.items():
-                    log_str += ", {}: {:.4f}".format(k, v.mean())
-                log_str += ", grad_norm: {:.4f}".format(grad_norm_buffer.mean())
+                for name in loss_names:
+                    log_str += ", {}: {:.4f}".format(name, global_loss_means[name])
+                log_str += ", grad_norm: {:.4f}".format(global_grad_norm)
                 log_str += ", lr: {:.6f}".format(lr_scheduler.get_last_lr()[0])
                 log_str += ", batch_time: {:.4f}s".format(batch_time_buffer.mean())
                 log_str += ", data_time: {:.4f}s".format(data_time_buffer.mean())
@@ -536,17 +564,17 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                 logger.info(log_str)
                 
                 if scalar_writer is not None:
-                    for k, buf in loss_buffers.items():
-                        scalar_writer.add_scalar(f'train/{k}', buf.mean(), iter)
-                    scalar_writer.add_scalar('train/grad_norm', grad_norm_buffer.mean(), iter)
+                    for name in loss_names:
+                        scalar_writer.add_scalar(f'train/{name}', global_loss_means[name], iter)
+                    scalar_writer.add_scalar('train/grad_norm', global_grad_norm, iter)
                     scalar_writer.add_scalar('train/lr', lr_scheduler.get_last_lr()[0], iter)
                     scalar_writer.add_scalar('train/batch_time', batch_time_buffer.mean(), iter)
                     scalar_writer.add_scalar('train/epoch', epoch, iter)
 
             if global_rank == 0 and cfg.wandb.use and iter % cfg.train.log_iter == 0:
-                for k, buf in loss_buffers.items():
-                    wandb.log({"train/" + k: buf.mean()}, commit=False)
-                wandb.log({"train/grad_norm": grad_norm_buffer.mean()},commit=False)
+                for name in loss_names:
+                    wandb.log({"train/" + name: global_loss_means[name]}, commit=False)
+                wandb.log({"train/grad_norm": global_grad_norm},commit=False)
                 wandb.log({"train/lr": lr_scheduler.get_last_lr()[0]}, commit=False)
                 wandb.log({"train/batch_time": batch_time_buffer.mean()}, commit=False)
                 wandb.log({"train/data_time": data_time_buffer.mean()}, commit=False)

@@ -1,23 +1,22 @@
 dataset:
   test:
-    name: BinarySegmentation
-    root_dir: /data/zhangxiaoshuai/Segmentation/_val/
+    name: Matting
+    root_dir: /data/zhangxiaoshuai/Segmentation/_val_matting/
     short_size: 512
-    mask_dir_name: masks
-    mask_threshold: 127
+    alpha_dir_name: alphas
   train:
-    name: BinarySegmentation
+    name: Matting
     root_dir: ''
     root_dirs: 
+      - /data/zhangxiaoshuai/Segmentation/_train/image/p3m/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/matting/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/hpm17k/
       - /data/zhangxiaoshuai/Segmentation/_train/image/cihp/
       - /data/zhangxiaoshuai/Segmentation/_train/image/come/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/ego_arm_hand/
       - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part1/
       - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part2/
       - /data/zhangxiaoshuai/Segmentation/_train/image/human_art_part1/
       - /data/zhangxiaoshuai/Segmentation/_train/image/human_art_part2/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/imagematte_resized/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/matting/
       - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part1/
       - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part2/
       - /data/zhangxiaoshuai/Segmentation/_train/image/ppr_part1/
@@ -25,23 +24,22 @@ dataset:
       - /data/zhangxiaoshuai/Segmentation/_train/image/sip/
       - /data/zhangxiaoshuai/Segmentation/_train/image/supervisely/
       - /data/zhangxiaoshuai/Segmentation/_train/image/tstars/
-      - /data/zhangxiaoshuai/Segmentation/_train/video/davis/
-      - /data/zhangxiaoshuai/Segmentation/_train/video/pphumanseg/
       - /data/zhangxiaoshuai/Segmentation/_train/video/tianchi/
       - /data/zhangxiaoshuai/Segmentation/_train/video/video_matting/
-    root_sampling_rates: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.333, 0.333, 0.333]
+    root_sampling_rates: [1.0, 1.0, 0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.5, 0.5, 0.2, 0.2, 0.5, 0.1, 0.2]
     crop: [512, 512]
     flip_p: 0.5
     gamma_p: 0.5
     add_noise_p: 0.3
     jpeg_p: 0.1
     affine_p: 0.8
-    mask_dir_name: masks
-    mask_threshold: 127
+    keep_whole_p: 0.5
+    alpha_dir_name: alphas
 
 model:
-  arch: BiRefNetBinary
-  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/biref_dis_4gpu_host50/model_iter150000.pth
+  arch: BiRefNetPro
+  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/biref_dis_4gpu_host50_residual/model_iter99500.pth
+  load_encoder_only: false
   sync_bn: true
   having_unused_params: false
   encoder: star_matting
@@ -61,57 +59,41 @@ model:
     out_ref: false
     share_p3_patches: true
 
-    binary_loss:
-      target_threshold: 0.5
-      loss_weight: 1.0
-      # Coarse decoder outputs are x32, x16, and x8.
-      scale_weights: [0.125, 0.25, 0.5]
-      coarse_bce_weight: 2.0
-      coarse_dice_weight: 4.0
-      # Final full-resolution output supervision.
-      hybrid_e_weight: 1.0
-      hybrid_e_kernel_size: 31
-      hybrid_e_boundary_factor: 5.0
-      final_ssim_weight: 4.0
-      focal_enabled: true
-      focal_weight: 6.0
-      focal_gamma: 1.5
-      focal_alpha: 0.5
-      hard_negative_enabled: fasle
-      hard_negative_weight: 0.0
+  lambdas_pix_last:
+    bce: 0
+    mae: 3
+    ssim: 1
 
-name: biref_dis_4gpu_host50_residual
-output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis
+  pix_loss_weight: 5.0
+  # MODNet-style blurred MSE on native x32 and x16 predictions.
+  coarse_semantic_loss_weight: 10.0
+  loss_alpha_grad_w: 100.0
+  loss_alpha_lap_w: 30.0
+  loss_alpha_gradun_w: 0.75
+  loss_alpha_lapun_w: 0.225
+  use_ddc_loss: false
+
+name: biref_matting_4gpu_host50
+output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting
 test:
   batch_size: 1
   log_iter: 200
   metrics:
-  - IoU
-  - Dice
-  - F1Score
-  - Precision
-  - Recall
-  - Specificity
-  - BalancedAccuracy
-  - BER
-  - mIoU
-  - MAE
-  - S
-  - F
-  - E
-  - BIoU
+  - MAD
+  - MSE
+  - SAD
   num_workers: 4
   postprocessing: false
-  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/dis_predictions_host50
+  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/matting_predictions
   save_results: true
 train:
   batch_size: 64
   log_iter: 50
-  max_iter: 100000
+  max_iter: 150000
   num_workers: 16
   optimizer:
     betas: [0.9, 0.999]
-    lr: 0.001
+    lr: 0.0001
     momentum: 0.9
     name: adamw
     weight_decay: 0.01
@@ -121,22 +103,20 @@ train:
   resume_last: false
   scheduler:
     name: warmup_decay_multi
-    warmup_iters: 500
+    warmup_iters: 1000
     warmup_factor: 0.001
-    delay_iters: 1000
-    decay_steps: [100000]
+    delay_iters: 50000
+    decay_steps: [150000]
     peak_scale: 0.7
-    eta_min: 0.00001
+    eta_min: 0.000001
   seed: 1234
-  val_best_metric: IoU
+  val_best_metric: MAD
   val_dist: true
   val_iter: 500
   val_metrics:
-  - IoU
-  - Precision
-  - Recall
-  - MAE
-  - BIoU
+  - MAD
+  - MSE
+  - SAD
   vis_iter: 500
 tensorboard:
   use: true

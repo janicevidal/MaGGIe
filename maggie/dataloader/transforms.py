@@ -1061,7 +1061,8 @@ class MotionBlur(object):
 
 class RandomAffineCrop(object):
     def __init__(self, crop_size, random, p=0.8,
-                 angle_range=(-15, 15), scale_range=(0.8, 1.2), shift_ratio=0.2):
+                 angle_range=(-15, 15), scale_range=(0.8, 1.2),
+                 shift_ratio=0.2, keep_whole_p=0.7):
         """
         Args:
             crop_size: tuple (h, w)，输出尺寸
@@ -1070,7 +1071,10 @@ class RandomAffineCrop(object):
             angle_range: 旋转角度范围（度）
             scale_range: 缩放范围（相对于当前前景尺寸）
             shift_ratio: 平移幅度占图像尺寸的比例，控制目标在画面中移动范围
+            keep_whole_p: 使用完整图像缩放比例的概率；其余情况适度放大并裁剪长边
         """
+        if not 0.0 <= keep_whole_p <= 1.0:
+            raise ValueError("keep_whole_p must be between 0 and 1")
         self.crop_size = crop_size
         self.crop_h, self.crop_w = crop_size
         self.random = random
@@ -1078,6 +1082,7 @@ class RandomAffineCrop(object):
         self.angle_range = angle_range
         self.scale_range = scale_range
         self.shift_ratio = shift_ratio
+        self.keep_whole_p = keep_whole_p
 
     def __call__(self, input_dict):
         frames = input_dict["frames"]
@@ -1117,7 +1122,7 @@ class RandomAffineCrop(object):
             
             width_scale = self.crop_w / W
             height_scale = self.crop_h / H
-            if self.random.rand() < 0.7:
+            if self.random.rand() < self.keep_whole_p:
                 # Keep the whole image inside the output crop.
                 base_scale = min(width_scale, height_scale)
             else:

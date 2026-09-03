@@ -35,6 +35,7 @@ class BiRefNetPro(nn.Module, PyTorchModelHubMixin):
         
         self.lambdas_pix_last = self.cfg.lambdas_pix_last
         self.pix_loss_weight = self.cfg.pix_loss_weight
+        self.coarse_semantic_loss_weight = (self.cfg.coarse_semantic_loss_weight)
         self.loss_alpha_lap_w = self.cfg.loss_alpha_lap_w
         self.loss_alpha_grad_w = self.cfg.loss_alpha_grad_w
         self.loss_alpha_lapun_w = self.cfg.loss_alpha_lapun_w
@@ -103,9 +104,17 @@ class BiRefNetPro(nn.Module, PyTorchModelHubMixin):
         
         # Forward through decoder
         pred = self.decoder(embedding)
-        
+
+        # During out-ref training the decoder returns ``(gdt, predictions)``;
+        # otherwise it returns the prediction list directly. Keep the batch
+        # dimension of the final prediction in both cases.
+        scaled_preds = (
+            pred[1]
+            if self.cfg.decoder_args.out_ref and self.training
+            else pred)
+
         output = {}
-        output['alpha_pred'] = pred[-1][-1].sigmoid()
+        output['alpha_pred'] = scaled_preds[-1].sigmoid()
         
         # Compute loss during training
         if self.training:
@@ -120,9 +129,31 @@ class BiRefNetPro(nn.Module, PyTorchModelHubMixin):
         
         return output
 
+    @staticmethod
+    def build_coarse_semantic_target(alpha, output_size):
+        """Create MODNet's blurred low-resolution matte target."""
+        target = F.interpolate(
+            alpha, size=output_size, mode='bilinear', align_corners=False)
+
+        # Exact output of scipy.ndimage.gaussian_filter applied to a centered
+        # impulse in a 3x3 array with sigma=0.8 (the referenced MODNet code).
+        kernel = target.new_tensor([
+            [0.062610564, 0.124999902, 0.062610564],
+            [0.124999902, 0.249558134, 0.124999902],
+            [0.062610564, 0.124999902, 0.062610564],
+        ]).view(1, 1, 3, 3)
+        kernel = kernel.expand(target.shape[1], 1, 3, 3)
+
+        target = F.pad(target, (1, 1, 1, 1), mode='reflect')
+        return F.conv2d(target, kernel, groups=target.shape[1])
+
     def compute_loss(self, pred, alphas, images_dist, phas_dist):
         total_loss = 0
         loss_dict = {}
+        # All Laplacian losses in this batch use the same alpha target. Build
+        # its pyramid once and reuse it for x8 unknown, x1 unknown, and the
+        # final global Laplacian objectives.
+        alpha_lap_pyramid = self.lap_loss.build_pyramid(alphas)
         
         scaled_preds = pred
         
@@ -137,9 +168,22 @@ class BiRefNetPro(nn.Module, PyTorchModelHubMixin):
             loss_dict['gdt'] = loss_gdt * self.gdt_loss_weight
             total_loss += loss_gdt * self.gdt_loss_weight
 
+        fine_level_start = max(len(scaled_preds) - 2, 0)
         for idx, pred_lvl in enumerate(scaled_preds):
+            is_coarse_level = idx < fine_level_start
+
+            if is_coarse_level:
+                semantic_target = self.build_coarse_semantic_target(alphas, pred_lvl.shape[-2:])
+                coarse_semantic_loss = F.mse_loss(pred_lvl.sigmoid(), semantic_target)
+                coarse_semantic_loss *= self.coarse_semantic_loss_weight
+                total_loss += coarse_semantic_loss
+                loss_dict['coarse_semantic'] = (loss_dict.get('coarse_semantic', 0.) + coarse_semantic_loss)
+                # Coarse branches use only the native-resolution semantic
+                # objective instead of upsampled pixel-level losses.
+                continue
+
             if pred_lvl.shape != alphas.shape:
-                pred_lvl = F.interpolate(pred_lvl, size=alphas.shape[2:], mode='bilinear')
+                pred_lvl = F.interpolate(pred_lvl, size=alphas.shape[2:], mode='bilinear', align_corners=False)
                 scaled_weight = 1.0
             else:
                 scaled_weight = len(scaled_preds)
@@ -147,6 +191,10 @@ class BiRefNetPro(nn.Module, PyTorchModelHubMixin):
             # pred_sigmoid = pred_lvl.sigmoid()
             
             for criterion_name, criterion in self.criterions_last.items():
+                # SSIM is reserved for the final full-resolution prediction.
+                if (criterion_name == 'ssim' and
+                        idx != len(scaled_preds) - 1):
+                    continue
                 _loss = criterion(pred_lvl.sigmoid(), alphas) * self.lambdas_pix_last[criterion_name] * self.pix_loss_weight * scaled_weight
                 total_loss += _loss
                 loss_dict[criterion_name] = loss_dict.get(criterion_name, 0.) + _loss
@@ -173,21 +221,28 @@ class BiRefNetPro(nn.Module, PyTorchModelHubMixin):
                 ).to(pred_sigmoid.device)
                 
                 loss_grad = self.grad_loss(pred_sigmoid, alphas, mask=weight_mask)
-                loss_grad *= self.loss_alpha_gradun_w
+                loss_grad *= self.loss_alpha_gradun_w * scaled_weight
                 total_loss += loss_grad
                 
-                loss_lap = self.lap_loss(pred_sigmoid, alphas, weight_mask)
-                loss_lap *= self.loss_alpha_lapun_w
+                loss_lap = self.lap_loss(
+                    pred_sigmoid,
+                    alphas,
+                    weight_mask,
+                    target_pyramid=alpha_lap_pyramid)
+                loss_lap *= self.loss_alpha_lapun_w * scaled_weight
                 total_loss += loss_lap
                 
-                loss_dict['grad_unknown'] = loss_dict.get('grad_unknown', 0.) + loss_grad
-                loss_dict['lap_unknown'] = loss_dict.get('lap_unknown', 0.) + loss_lap
+                loss_dict['grad_un'] = (loss_dict.get('grad_un', 0.) + loss_grad)
+                loss_dict['lap_un'] = (loss_dict.get('lap_un', 0.) + loss_lap)
                 
         final_pred = scaled_preds[-1]
         final_sigmoid = final_pred.sigmoid()
         
         loss_grad = self.grad_loss(final_sigmoid, alphas) * self.loss_alpha_grad_w
-        loss_lap = self.lap_loss(final_sigmoid, alphas) * self.loss_alpha_lap_w
+        loss_lap = self.lap_loss(
+            final_sigmoid,
+            alphas,
+            target_pyramid=alpha_lap_pyramid) * self.loss_alpha_lap_w
         
         total_loss += loss_grad + loss_lap
         loss_dict['grad'] = loss_grad
