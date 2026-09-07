@@ -36,6 +36,7 @@ def build_dataset(cfg, is_train=True, random_seed=0):
             dataset = MattingDataset(root_dir=root_dir, split=cfg.split, short_size=cfg.short_size, crop=cfg.crop, is_train=is_train, random_seed=random_seed,
                                      alpha_dir_name=cfg.alpha_dir_name, padding_crop_p=cfg.padding_crop_p, flip_p=cfg.flip_p, gamma_p=cfg.gamma_p, add_noise_p=cfg.add_noise_p, 
                                      jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p,
+                                     keep_whole_p=getattr(cfg, 'keep_whole_p', 0.7),
                                      root_sampling_rates=getattr(cfg, 'root_sampling_rates', []))
         else:
             dataset = MattingDataset(root_dir=root_dir, split=cfg.split, short_size=cfg.short_size, is_train=is_train, alpha_dir_name=cfg.alpha_dir_name)
@@ -51,7 +52,8 @@ def build_dataset(cfg, is_train=True, random_seed=0):
                 root_sampling_rates=getattr(cfg, 'root_sampling_rates', []),
                 padding_crop_p=cfg.padding_crop_p, flip_p=cfg.flip_p,
                 gamma_p=cfg.gamma_p, add_noise_p=cfg.add_noise_p,
-                jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p)
+                jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p,
+                keep_whole_p=getattr(cfg, 'keep_whole_p', 0.7))
         else:
             dataset = BinarySegmentationDataset(
                 root_dir=root_dir, split=cfg.split,
@@ -72,7 +74,8 @@ def build_dataset(cfg, is_train=True, random_seed=0):
             random_seed=random_seed, alpha_dir_name=cfg.alpha_dir_name,
             padding_crop_p=cfg.padding_crop_p, flip_p=cfg.flip_p,
             gamma_p=cfg.gamma_p, add_noise_p=cfg.add_noise_p,
-            jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p)
+            jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p,
+            keep_whole_p=getattr(cfg, 'keep_whole_p', 0.7))
         binary_dataset = BinarySegmentationDataset(
             root_dir=binary_root, split=cfg.split,
             short_size=cfg.short_size, crop=cfg.crop, is_train=True,
@@ -83,7 +86,8 @@ def build_dataset(cfg, is_train=True, random_seed=0):
                 cfg, 'binary_root_sampling_rates', []),
             padding_crop_p=cfg.padding_crop_p, flip_p=cfg.flip_p,
             gamma_p=cfg.gamma_p, add_noise_p=cfg.add_noise_p,
-            jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p)
+            jpeg_p=cfg.jpeg_p, affine_p=cfg.affine_p,
+            keep_whole_p=getattr(cfg, 'keep_whole_p', 0.7))
         dataset = MixedSupervisionDataset(
             matting_dataset, binary_dataset,
             binary_ratio=cfg.binary_ratio,

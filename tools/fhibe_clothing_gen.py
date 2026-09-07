@@ -4,40 +4,75 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 import numpy as np
 
+# def generate_clothes_mask(image_path: Path, json_path: Path, output_mask_path: Path):
+#     """
+#     从 JSON 文件中提取上衣和下衣分割多边形，生成单通道掩码并保存。
+#     掩码值：0=背景，1=Upper body clothes，2=Lower body clothes。
+#     """
+#     with open(json_path, 'r', encoding='utf-8') as f:
+#         data = json.load(f)
+
+#     # img_w = int(data['image_annotation']['image_width'])
+#     # img_h = int(data['image_annotation']['image_height'])
+#     # print(f"mask尺寸: {img_w} x {img_h}")
+    
+#     with Image.open(image_path) as img:
+#         img_w, img_h = img.size 
+
+#     mask = np.zeros((img_h, img_w), dtype=np.uint8)
+
+#     segments = data['subject_annotation'][0].get('segments', [])
+#     for seg in segments:
+#         class_name = seg['class_name']
+#         if 'Upper body clothes' in class_name:
+#             value = 1
+#         elif 'Lower body clothes' in class_name:
+#             value = 2
+#         else:
+#             continue
+
+#         polygon = [(int(pt['x']), int(pt['y'])) for pt in seg['polygon']]
+#         pil_mask = Image.fromarray(mask)
+#         draw = ImageDraw.Draw(pil_mask)
+#         draw.polygon(polygon, fill=value)
+#         mask = np.array(pil_mask)
+        
+#         mask = (mask > 0).astype(np.uint8) * 255
+
+#     Image.fromarray(mask).save(output_mask_path)
+
 def generate_clothes_mask(image_path: Path, json_path: Path, output_mask_path: Path):
     """
-    从 JSON 文件中提取上衣和下衣分割多边形，生成单通道掩码并保存。
-    掩码值：0=背景，1=Upper body clothes，2=Lower body clothes。
+    从 JSON 文件中提取所有主体的上衣和下衣分割多边形，生成二值掩码。
+    掩码值：0=背景，255=衣服区域。
     """
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    # img_w = int(data['image_annotation']['image_width'])
-    # img_h = int(data['image_annotation']['image_height'])
-    # print(f"mask尺寸: {img_w} x {img_h}")
-    
     with Image.open(image_path) as img:
-        img_w, img_h = img.size 
+        img_w, img_h = img.size
 
     mask = np.zeros((img_h, img_w), dtype=np.uint8)
 
-    segments = data['subject_annotation'][0].get('segments', [])
-    for seg in segments:
-        class_name = seg['class_name']
-        if 'Upper body clothes' in class_name:
-            value = 1
-        elif 'Lower body clothes' in class_name:
-            value = 2
-        else:
-            continue
+    # 遍历所有主体（包括 primary 和 secondary）
+    for subject in data.get('subject_annotation', []):
+        segments = subject.get('segments', [])
+        for seg in segments:
+            class_name = seg['class_name']
+            # 只处理上衣和下衣
+            if 'Upper body clothes' in class_name or 'Lower body clothes' in class_name:
+                # 统一填充为255（二值）
+                value = 255
+            else:
+                continue
 
-        polygon = [(int(pt['x']), int(pt['y'])) for pt in seg['polygon']]
-        pil_mask = Image.fromarray(mask)
-        draw = ImageDraw.Draw(pil_mask)
-        draw.polygon(polygon, fill=value)
-        mask = np.array(pil_mask)
-        
-        mask = (mask > 0).astype(np.uint8) * 255
+            polygon = [(int(pt['x']), int(pt['y'])) for pt in seg['polygon']]
+            pil_mask = Image.fromarray(mask)
+            draw = ImageDraw.Draw(pil_mask)
+            draw.polygon(polygon, fill=value)
+            mask = np.array(pil_mask)
+            # 保持二值化（避免绘制重叠时出现其他数值）
+            mask = (mask > 0).astype(np.uint8) * 255
 
     Image.fromarray(mask).save(output_mask_path)
 
@@ -110,6 +145,6 @@ def collect_images_and_masks(source_root, image_output_dir, mask_output_dir):
 if __name__ == "__main__":
     SOURCE = "/data/xiaoshuai/human_matting/dataset/FHIBE/fhibe.20250716.u.gT5_rFTA_downsampled_public/data/raw/fhibe_downsampled/"
     IMAGE_OUT = "/data/xiaoshuai/clothing_segmentation/FHIBE/images"
-    MASK_OUT = "/data/xiaoshuai/clothing_segmentation/FHIBE/masks"
+    MASK_OUT = "/data/xiaoshuai/clothing_segmentation/FHIBE/masks_all"
 
     collect_images_and_masks(SOURCE, IMAGE_OUT, MASK_OUT)
