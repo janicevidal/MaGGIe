@@ -83,9 +83,13 @@ class BiRefNet(nn.Module, PyTorchModelHubMixin):
         
         # Forward through decoder
         pred = self.decoder(embedding)
-        
+
+        scaled_preds = (
+            pred[1]
+            if self.cfg.decoder_args.out_ref and self.training
+            else pred)
         output = {}
-        output['alpha_pred'] = pred[-1][-1].sigmoid()
+        output['alpha_pred'] = scaled_preds[-1].sigmoid()
         
         # Compute loss during training
         if self.training:

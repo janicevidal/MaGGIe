@@ -737,6 +737,12 @@ class PyramidVisionTransformer(BaseModule):
             the patch embedding. Defaults: True.
         use_conv_ffn (bool): If True, use Convolutional FFN to replace FFN.
             Default: False.
+        mul_scl_ipt (str | bool): Optional multi-scale input fusion mode.
+            Set to ``'cat'`` or ``'add'`` to fuse features from a
+            half-resolution input. ``False`` disables the branch.
+        cxt (Sequence, optional): Select the number of shallow feature maps
+            to concatenate with the deepest feature map. ``False`` disables
+            context fusion.
         act_cfg (dict): The activation config for FFNs.
             Default: dict(type='GELU').
         norm_cfg (dict): Config dict for normalization layer.
@@ -785,7 +791,10 @@ class PyramidVisionTransformer(BaseModule):
                      dict(type='TruncNormal', std=.02, layer=['Linear']),
                      dict(type='Constant', val=1, layer=['LayerNorm']),
                      dict(type='Kaiming', layer=['Conv2d'])
-                 ]):
+                 ],
+                 cxt=False,
+                 mul_scl_ipt=False,
+                 include_stem_out=False):
         super().__init__(init_cfg=init_cfg)
 
         if embed_dims <= 32:
@@ -794,6 +803,12 @@ class PyramidVisionTransformer(BaseModule):
             self.prmv1 = PRMv1()
 
         self.convert_weights = convert_weights
+        # Optional multi-scale input branch.  ``False`` keeps the original
+        # single-scale forward path and checkpoint behaviour unchanged;
+        # ``'cat'`` and ``'add'`` fuse features from a half-resolution input.
+        self.cxt = cxt
+        self.mul_scl_ipt = mul_scl_ipt
+        self.include_stem_out = include_stem_out
         if isinstance(pretrain_img_size, int):
             pretrain_img_size = to_2tuple(pretrain_img_size)
         elif isinstance(pretrain_img_size, tuple):
@@ -898,15 +913,16 @@ class PyramidVisionTransformer(BaseModule):
         else:
             super(PyramidVisionTransformer, self).init_weights()
 
-    def forward(self, x):
-        outs = []
-        outs.append(x)
-
+    def _forward_features(self, x):
+        """Run the PVT stages and return one feature map per stage."""
         if self.embed_dims <= 32:
             x=self.stem(x)
         else:
             x = self.prmv1(x)
+        
+        stem_out = x
 
+        stage_outs = []
         for i, layer in enumerate(self.layers):
             x, hw_shape = layer[0](x)
 
@@ -916,9 +932,53 @@ class PyramidVisionTransformer(BaseModule):
             x = layer[2](x)
 
             x = layer[3](x,hw_shape)
+            stage_outs.append(x)
 
+        return stage_outs, stem_out
+
+    def forward(self, x):
+        outs = [x]
+        stage_outs, stem_out = self._forward_features(x)
+
+        if self.mul_scl_ipt:
+            _, _, height, width = x.shape
+            x_pyramid = F.interpolate(x, size=(height // 2, width // 2), mode='bilinear', align_corners=False)
+            pyramid_outs, pyramid_stem = self._forward_features(x_pyramid)
+
+            # Treat boolean True as the natural concatenation mode. 
+            fusion_mode = 'cat' if self.mul_scl_ipt is True else self.mul_scl_ipt
+            if fusion_mode == 'cat':
+                if self.include_stem_out:
+                    stem_out = torch.cat((stem_out, F.interpolate(pyramid_stem, size=stem_out.shape[2:], mode='bilinear', align_corners=False)), dim=1)
+                    
+                stage_outs = [
+                    torch.cat(
+                        (feature, F.interpolate(pyramid_feature, size=feature.shape[2:], mode='bilinear', align_corners=False)), dim=1)
+                    for feature, pyramid_feature in zip(stage_outs, pyramid_outs)
+                ]
+            elif fusion_mode == 'add':
+                if self.include_stem_out:
+                    stem_out = stem_out + F.interpolate(pyramid_stem, size=stem_out.shape[2:], mode='bilinear', align_corners=False)
+                    
+                stage_outs = [
+                    feature + F.interpolate(pyramid_feature, size=feature.shape[2:], mode='bilinear', align_corners=False)
+                    for feature, pyramid_feature in zip(stage_outs, pyramid_outs)
+                ]
+
+        if self.cxt:
+            context_count = 1 if self.cxt is True else len(self.cxt)
+            context_features = [
+                F.interpolate(feature, size=stage_outs[-1].shape[2:], mode='bilinear', align_corners=False)
+                for feature in stage_outs[:-1][-context_count:]
+            ]
+            stage_outs[-1] = torch.cat(context_features + [stage_outs[-1]], dim=1)
+        
+        if self.include_stem_out:
+            outs.append(stem_out)
+
+        for i, feature in enumerate(stage_outs):
             if i in self.out_indices:
-                outs.append(x)
+                outs.append(feature)
 
         return outs
 

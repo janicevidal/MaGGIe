@@ -606,14 +606,14 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                 
             # Evaluation
             if iter % cfg.train.val_iter == 0 and (cfg.train.val_dist or (not cfg.train.val_dist and global_rank == 0)):
-                logging.info("Start validation...")
+                logger.info("Start validation...")
                 model.eval()
                 val_model = model.module if is_dist else model
                 _ = [v.reset() for v in val_error_dict.values()]
                 _ = eval_fn(val_model, val_loader, device, cfg.test.log_iter, val_error_dict, do_postprocessing=False, callback=None)
 
                 if is_dist and cfg.train.val_dist:
-                    logging.info("Gathering metrics...")
+                    logger.info("Gathering metrics...")
                     # Gather all metrics
                     for k, v in val_error_dict.items():
                         v.gather_metric(0)
@@ -622,7 +622,7 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                     log_str = "Validation:"
                     for k, v in val_error_dict.items():
                         log_str += "{}: {:.4f}, ".format(k, v.average())
-                    logging.info(log_str)
+                    logger.info(log_str)
                     
                     # Save best model
                     total_error = val_error_dict[cfg.train.val_best_metric].average()
@@ -631,9 +631,9 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                         if best_metric.higher_is_better
                         else total_error < best_score)
                     if is_better:
-                        logging.info("Best score changed from {:.4f} to {:.4f}".format(best_score, total_error))
+                        logger.info("Best score changed from {:.4f} to {:.4f}".format(best_score, total_error))
                         best_score = total_error
-                        logging.info("Saving best model...")
+                        logger.info("Saving best model...")
                         save_path = os.path.join(cfg.output_dir, 'best_model.pth')
                         with open(os.path.join(cfg.output_dir, "best_metrics.txt"), 'w') as f:
                             f.write("iter: {}\n".format(iter))
@@ -653,7 +653,7 @@ def train(cfg, rank, is_dist=False, precision=32, global_rank=None):
                             scalar_writer.add_scalar(f'val/{k}', v.average(), iter)
                         scalar_writer.add_scalar('val/best_error', best_score, iter)
                     
-                    logging.info("Saving the last model...")
+                    logger.info("Saving the last model...")
                     save_dict = {
                         'optimizer': optimizer.state_dict(),
                         'lr_scheduler': lr_scheduler.state_dict(),

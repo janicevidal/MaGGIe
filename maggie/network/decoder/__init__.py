@@ -5,3 +5,5 @@
 # from .resnet_inst_matt_spconv_temp import res_shortcut_inst_matt_spconv_temp_22 # MaGGIe_Temp: IMD + Spconv + Temporal
 # from .shm import shm # SparseMat
 from .biref_decoder import biref_decoder
+from .biref_aspp_decoder import biref_aspp_decoder
+from .focal_decoder import focal_decoder, FocalDecoder

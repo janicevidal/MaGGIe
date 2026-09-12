@@ -7,3 +7,4 @@ from .birefnet import BiRefNet
 from .birefnet_pro import BiRefNetPro
 from .birefnet_pro_aux import BiRefNetProAux
 from .birefnet_binary import BiRefNetBinary
+from .focalnet_binary import FocalNetBinary

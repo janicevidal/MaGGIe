@@ -23,7 +23,11 @@ def main(cfg, eval_only=False, precision=32, is_sweep=False):
     rootLogger = logging.getLogger()
     rootLogger.handlers.clear()
 
-    fileHandler = logging.FileHandler("{0}/{1}log_rank{2}.log".format(cfg.output_dir, "test-" if eval_only else "", str(global_rank)))
+    if not eval_only and global_rank == 0:
+        log_path = os.path.join(cfg.output_dir, 'train.log')
+    else:
+        log_path = "{0}/{1}log_rank{2}.log".format(cfg.output_dir, "test-" if eval_only else "", str(global_rank))
+    fileHandler = logging.FileHandler(log_path)
     fileHandler.setFormatter(logFormatter)
     rootLogger.addHandler(fileHandler)
     if os.getenv("DEBUG", False):
