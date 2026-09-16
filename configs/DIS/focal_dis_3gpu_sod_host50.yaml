@@ -3,7 +3,7 @@
 dataset:
   test:
     name: BinarySegmentation
-    root_dir: /data/xiaoshuai/human_matting/dichotomous_dataset/_val/
+    root_dir: /data/zhangxiaoshuai/Segmentation/_val/
     short_size: 512
     mask_dir_name: masks
     mask_threshold: 127
@@ -11,30 +11,29 @@ dataset:
     name: BinarySegmentation
     root_dir: ''
     root_dirs:
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/cihp/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/come/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/ego_arm_hand/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/fhibe_part1/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/fhibe_part2/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/human_art_part1/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/human_art_part2/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/imagematte_resized/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/matting/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/ochuman_part1/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/ochuman_part2/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/ppr_part1/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/ppr_part2/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/sip/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/supervisely/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/tstars/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/non_salient/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/come_non_person/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/s3od_non_person/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/video/davis/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/video/pphumanseg/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/video/tianchi/
-      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/video/video_matting/
-    root_sampling_rates: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.05, 0.5, 0.3, 0.3, 0.3]
+      - /data/zhangxiaoshuai/Segmentation/_train/image/cihp/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/come/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/ego_arm_hand/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part1/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part2/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/human_art_part1/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/human_art_part2/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/imagematte_resized/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/matting/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part1/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part2/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/ppr_part1/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/ppr_part2/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/sip/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/supervisely/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/tstars/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/non_salient/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/come_non_person/
+      - /data/zhangxiaoshuai/Segmentation/_train/video/davis/
+      - /data/zhangxiaoshuai/Segmentation/_train/video/pphumanseg/
+      - /data/zhangxiaoshuai/Segmentation/_train/video/tianchi/
+      - /data/zhangxiaoshuai/Segmentation/_train/video/video_matting/
+    root_sampling_rates: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.3, 0.3, 0.3]
     crop: [512, 512]
     flip_p: 0.5
     gamma_p: 0.5
@@ -72,8 +71,6 @@ model:
     mlp_ratios: [2, 2, 2, 4]
     neck_channels: 32
     rgb_channels: 8
-    # Evaluation head: alpha (final x1) or neck (x2, upsampled to input size).
-    eval_output: alpha
     ms_supervision: true
     out_ref: false
     binary_loss:
@@ -96,12 +93,12 @@ model:
       hard_negative_enabled: false
       hard_negative_weight: 0.0
 
-name: focal_dis_3gpu_sod
+name: focal_dis_3gpu_sod_host50
 output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/
 test:
   batch_size: 1
   log_iter: 200
-  metrics: [IoU, Dice, F1Score, Precision, Recall, Specificity, BalancedAccuracy, BER, mIoU, MAE, BIoU]
+  metrics: [IoU, Dice, F1Score, Precision, Recall, Specificity, BalancedAccuracy, BER, mIoU, MAE]
   num_workers: 4
   postprocessing: false
   save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/focal_dis_predictions

@@ -1,0 +1,137 @@
+# RGB-only StarMatting encoder with the six-scale FocalMatter decoder.
+# Decoder outputs are x32, x16, x8, x4, x2 and x1.
+dataset:
+  test:
+    name: Matting
+    root_dir: /data/zhangxiaoshuai/Segmentation/_val_matting/
+    short_size: 512
+    alpha_dir_name: alphas
+  train:
+    name: Matting
+    root_dir: ''
+    root_dirs:
+      - /data/zhangxiaoshuai/Segmentation/_train/image/p3m/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/matting/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/ppr/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/sip/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/supervisely/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/tstars/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/human_art/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/come_non_person/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/hpm17k/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/cihp/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/come/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part1/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part2/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part1/
+      - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part2/
+      - /data/zhangxiaoshuai/Segmentation/_train/video/tianchi/
+      - /data/zhangxiaoshuai/Segmentation/_train/video/video_matting/
+    root_sampling_rates: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.1, 0.1]
+    crop: [512, 512]
+    flip_p: 0.5
+    gamma_p: 0.5
+    add_noise_p: 0.3
+    jpeg_p: 0.1
+    affine_p: 0.8
+    keep_whole_p: 0.5
+    alpha_dir_name: alphas
+
+model:
+  arch: FocalNetMatting
+  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/focal_dis_3gpu_sod_host50/model_iter199500.pth
+  sync_bn: true
+  having_unused_params: false
+  encoder: star_matting
+  encoder_args:
+    embed_dims: 16
+    num_layers: [1, 3, 6, 1]
+    prm_ratio: [1, 2, 2, 2]
+    dr_ratio: [1, 2, 2, 4]
+    structure: 'TE'
+    mul_scl_ipt: false
+    include_stem_out: true
+  decoder: focal_decoder
+  decoder_args:
+    # [x1 RGB, x2 stem, x3 stage1, x4 stage2, x5 stage3, x6 stage4]
+    in_channels: [3, 16, 16, 32, 80, 128]
+    out_channels: [96, 72, 48, 24]
+    refine_depths: [1, 1, 1, 1]
+    num_heads: [8, 6, 4, 2]
+    # Deep-to-shallow EMLLA q/k reduction; keeps q/k head width valid.
+    dr_ratios: [2, 2, 2, 1]
+    mlp_ratios: [2, 2, 2, 4]
+    neck_channels: 32
+    rgb_channels: 8
+    eval_output: alpha
+    ms_supervision: true
+    out_ref: false
+    matting_loss:
+      coarse_scale_weights: [0.5, 1.0]
+      fine_scale_weights: [0.25, 0.5, 0.75, 1.0]
+      unknown_scale_weights: [0.5, 0.75, 1.0]
+      unknown_kernel_sizes: [19, 15, 11, 7]
+      unknown_source: gt_pred_limited
+      soft_unknown_thresholds: [5, 250]
+      hard_boundary_threshold: 0.5
+      include_prediction_error: true
+      prediction_error_thresholds: [0.35, 0.30, 0.25, 0.20]
+      unknown_gt_support_kernel_sizes: [31, 25, 19, 15]
+      mae_unknown_factors: [1.0, 1.0, 1.0, 1.0]
+
+  # Pixel losses are applied to x8/x4/x2/x1. SSIM is applied only to x1.
+  lambdas_pix_last:
+    bce: 0
+    mae: 3
+    ssim: 1
+
+  pix_loss_weight: 6.0
+  coarse_semantic_loss_weight: 10.0
+  loss_alpha_grad_w: 80.0
+  loss_alpha_lap_w: 20.0
+  loss_alpha_gradun_w: 1.0
+  loss_alpha_lapun_w: 0.3
+  use_ddc_loss: false
+
+name: focal_matting_3gpu_host50
+output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting
+test:
+  batch_size: 1
+  log_iter: 200
+  metrics: [MAD, MSE, SAD, Grad]
+  num_workers: 4
+  postprocessing: false
+  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/focal_matting_predictions
+  save_results: true
+train:
+  batch_size: 64
+  log_iter: 50
+  max_iter: 150000
+  num_workers: 16
+  optimizer:
+    betas: [0.9, 0.999]
+    lr: 0.0001
+    momentum: 0.9
+    name: adamw
+    weight_decay: 0.01
+  gradient_clipping:
+    enabled: false
+  resume: ''
+  resume_last: false
+  scheduler:
+    name: warmup_decay_multi
+    warmup_iters: 1000
+    warmup_factor: 0.001
+    delay_iters: 50000
+    decay_steps: [150000]
+    peak_scale: 0.7
+    eta_min: 0.000001
+  seed: 1234
+  val_best_metric: MAD
+  val_dist: true
+  val_iter: 500
+  val_metrics: [MAD, MSE, SAD, Grad]
+  vis_iter: 500
+tensorboard:
+  use: true
+  log_dir: tensorboard

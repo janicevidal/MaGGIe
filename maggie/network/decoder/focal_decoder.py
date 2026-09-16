@@ -132,7 +132,7 @@ class FocalDecoder(nn.Module):
                  dr_ratios=(4, 2, 2, 1),
                  mlp_ratios=(4, 4, 4, 4),
                  neck_channels=32, rgb_channels=8,
-                 ms_supervision=True, **kwargs):
+                 ms_supervision=True, eval_output='alpha', **kwargs):
         super().__init__()
         if len(in_channels) != 6:
             raise ValueError('in_channels must describe x1 through x6')
@@ -145,6 +145,10 @@ class FocalDecoder(nn.Module):
         d6, d5, d4, d3 = out_channels
         self.input_channels = tuple(in_channels)
         self.ms_supervision = ms_supervision
+        if eval_output not in ('alpha', 'neck'):
+            raise ValueError("eval_output must be 'alpha' or 'neck'")
+        # Evaluation-only selector. Training always returns all six outputs when multi-scale supervision is enabled.
+        self.eval_output = eval_output
 
         self.top_reduce = nn.Conv2d(c6, d6, 1, bias=False)
         self.top_context = ContextAggregation(c6, d6)
@@ -238,6 +242,13 @@ class FocalDecoder(nn.Module):
 
         if self.training and self.ms_supervision:
             return [self.pred6(p6), self.pred5(p5), self.pred4(p4), self.pred3(p3), neck_pred, alpha]
+        if self.eval_output == 'neck':
+            # Evaluation utilities undo dataset padding/resizing assuming the
+            # prediction is at input resolution. Upsample the x2 neck head
+            # here so its IoU is measured after the same interpolation that a
+            # deployment pipeline would apply, without changing training.
+            neck_pred = F.interpolate(neck_pred, size=x1.shape[-2:], mode='bilinear', align_corners=False)
+            return [neck_pred]
         return [alpha]
 
 

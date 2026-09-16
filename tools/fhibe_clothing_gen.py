@@ -59,8 +59,7 @@ def generate_clothes_mask(image_path: Path, json_path: Path, output_mask_path: P
         segments = subject.get('segments', [])
         for seg in segments:
             class_name = seg['class_name']
-            # 只处理上衣和下衣
-            if 'Upper body clothes' in class_name or 'Lower body clothes' in class_name:
+            if 'Upper body clothes' in class_name or 'Lower body clothes' in class_name or 'Full body clothes' in class_name or 'Neckwear' in class_name:
                 # 统一填充为255（二值）
                 value = 255
             else:

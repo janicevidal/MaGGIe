@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as torch_functional
 import skimage.measure
 from scipy.ndimage import convolve, distance_transform_edt
 from skimage.morphology import skeletonize
@@ -969,8 +969,8 @@ class Grad(Metric):
         return filter_x, filter_y
 
     def gauss_gradient(self, img):
-        img_filtered_x = F.conv2d(img, self.filter_x, padding=self.filter_x.shape[-1]//2)
-        img_filtered_y = F.conv2d(img, self.filter_y, padding=self.filter_y.shape[-1]//2)
+        img_filtered_x = torch_functional.conv2d(img, self.filter_x, padding=self.filter_x.shape[-1] // 2)
+        img_filtered_y = torch_functional.conv2d(img, self.filter_y, padding=self.filter_y.shape[-1] // 2)
         return torch.sqrt(img_filtered_x**2 + img_filtered_y**2)
     
     def compute_grad(self, pred, gt, mask):
