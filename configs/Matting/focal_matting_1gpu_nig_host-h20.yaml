@@ -1,32 +1,32 @@
-# RGB-only StarMatting encoder with the six-scale FocalMatter decoder.
+# RGB-only StarMatting encoder with the six-scale FocalMatter decoder plus the decomposed-uncertainty (NIG) objective of dugMatting.
 # Decoder outputs are x32, x16, x8, x4, x2 and x1.
 dataset:
   test:
     name: Matting
-    root_dir: /data/zhangxiaoshuai/Segmentation/_val_matting/
+    root_dir: /data/local3/Segmentation/matting/_val_matting/
     short_size: 512
     alpha_dir_name: alphas
   train:
     name: Matting
     root_dir: ''
     root_dirs:
-      - /data/zhangxiaoshuai/Segmentation/_train/image/p3m/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/matting/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/ppr/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/sip/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/supervisely/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/tstars/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/human_art/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/come_non_person/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/hpm17k/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/cihp/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/come/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part1/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part2/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part1/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part2/
-      - /data/zhangxiaoshuai/Segmentation/_train/video/tianchi/
-      - /data/zhangxiaoshuai/Segmentation/_train/video/video_matting/
+      - /data/local3/Segmentation/matting/_train/image/p3m/
+      - /data/local3/Segmentation/matting/_train/image/matting/
+      - /data/local3/Segmentation/matting/_train/image/rendermatte/ppr/
+      - /data/local3/Segmentation/matting/_train/image/rendermatte/sip/
+      - /data/local3/Segmentation/matting/_train/image/rendermatte/supervisely/
+      - /data/local3/Segmentation/matting/_train/image/rendermatte/tstars/
+      - /data/local3/Segmentation/matting/_train/image/rendermatte/human_art/
+      - /data/local3/Segmentation/matting/_train/image/come_non_person/
+      - /data/local3/Segmentation/matting/_train/image/hpm17k/
+      - /data/local3/Segmentation/matting/_train/image/cihp/
+      - /data/local3/Segmentation/matting/_train/image/come/
+      - /data/local3/Segmentation/matting/_train/image/fhibe_part1/
+      - /data/local3/Segmentation/matting/_train/image/fhibe_part2/
+      - /data/local3/Segmentation/matting/_train/image/ochuman_part1/
+      - /data/local3/Segmentation/matting/_train/image/ochuman_part2/
+      - /data/local3/Segmentation/matting/_train/video/tianchi/
+      - /data/local3/Segmentation/matting/_train/video/video_matting/
     root_sampling_rates: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.1, 0.1]
     crop: [512, 512]
     flip_p: 0.5
@@ -38,11 +38,8 @@ dataset:
     alpha_dir_name: alphas
 
 model:
-  arch: FocalNetMatting
-  # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/focal_dis_3gpu_sod_host50/model_iter199500.pth
-  # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter103000.pth
-  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter110500.pth
-  # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter149000.pth
+  arch: FocalNetMattingNIG
+  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/matting/focal_matting_3gpu_host50/model_iter110500.pth
   sync_bn: true
   having_unused_params: false
   encoder: star_matting
@@ -54,7 +51,7 @@ model:
     structure: 'TE'
     mul_scl_ipt: false
     include_stem_out: true
-  decoder: focal_decoder
+  decoder: focal_uncertainty_decoder
   decoder_args:
     # [x1 RGB, x2 stem, x3 stage1, x4 stage2, x5 stage3, x6 stage4]
     in_channels: [3, 16, 16, 32, 80, 128]
@@ -67,9 +64,16 @@ model:
     neck_channels: 32
     rgb_channels: 8
     eval_output: alpha
+    # Three extra 1x1 heads on the full-resolution head input.  They predict the
+    # NIG parameters (omega, evidence_alpha, beta) of the matte
+    nig_heads: true
+    eval_uncertainty: false
     ms_supervision: true
     out_ref: false
     matting_loss:
+      # Weight of the dugMatting NIG negative log-likelihood on the x1 branch, 0 disables it
+      nig_weight: 1.0
+      nig_lambda: 0.01
       coarse_scale_weights: [0.5, 1.0]
       fine_scale_weights: [0.25, 0.5, 0.75, 1.0]
       unknown_scale_weights: [0.5, 0.75, 1.0]
@@ -96,18 +100,18 @@ model:
   loss_alpha_lapun_w: 0.3
   use_ddc_loss: false
 
-name: focal_matting_3gpu_host50
-output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting
+name: focal_matting_1gpu_nig_host-h20
+output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/matting
 test:
   batch_size: 1
   log_iter: 200
   metrics: [MAD, MSE, SAD, Grad]
   num_workers: 4
   postprocessing: false
-  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/focal_matting_predictions
+  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/results/focal_matting_predictions
   save_results: true
 train:
-  batch_size: 64
+  batch_size: 144
   log_iter: 50
   max_iter: 150000
   num_workers: 16

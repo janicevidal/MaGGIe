@@ -333,6 +333,82 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map.mean(1).mean(1).mean(1)
 
 
+def criterion_nig(pred, omega, evidence_alpha, beta, target, lam=0.01,
+                  reduction='mean', epsilon=1e-8):
+    """Evidential Normal-Inverse-Gamma negative log-likelihood for matting.
+
+    Implements the objective of *dugMatting* (Wu et al., ICML 2023):
+
+        L = 0.5 * log(pi / omega)
+            - evidence_alpha * log(omega_hat)
+            + (evidence_alpha + 0.5) * log(omega * (pred - target)^2 + omega_hat)
+            + lam * |pred - target| * (2 * omega + evidence_alpha)
+
+    with ``omega_hat = 2 * beta * (1 + omega)``.  The first three terms are the
+    negative log-likelihood of a Student-t distribution with ``2 * alpha``
+    degrees of freedom: it grows quadratically for small errors but only
+    logarithmically for large ones, and the per-pixel scale is learned.  The
+    last term penalises large *evidence* attached to large errors, which is what
+    prevents the network from escaping supervision by inflating the noise
+    estimate everywhere.
+
+    Note that the reference implementation drops the ``log Phi`` constant of
+    Eq. (1) of the paper (``log Phi = lgamma(alpha) - lgamma(alpha + 0.5)``);
+    that constant is alpha-only and does not affect the optimum, so it is
+    dropped here as well.
+
+    Args:
+        pred: Predicted matte ``gamma`` (sigmoid output), same shape as target.
+        omega: Evidence precision of the mean, positive.
+        evidence_alpha: Inverse-Gamma shape parameter, larger than 1 (the
+            decoder floors it at 2.1 so that ``Var[sigma^2]`` is finite).
+        beta: Inverse-Gamma scale parameter, positive.
+        target: Ground-truth alpha in ``[0, 1]``.
+        lam: Weight of the evidence regulariser (0.01 in the reference code).
+        reduction: ``'mean'``, ``'sum'`` or ``'none'`` (per-pixel losses, useful
+            for reweighting by an unknown-region mask).
+        epsilon: Numerical guard for the logarithms.
+
+    The computation is promoted to float32 under mixed precision because
+    ``omega_hat`` can exceed the float16 range for large ``beta``.
+    """
+    target = target.to(device=pred.device, dtype=pred.dtype)
+    if pred.shape != target.shape:
+        raise ValueError(
+            'pred and target must have identical shapes, got {} and {}'.format(tuple(pred.shape), tuple(target.shape)))
+    if lam < 0:
+        raise ValueError('lam must be non-negative')
+
+    if pred.dtype in (torch.float16, torch.bfloat16):
+        pred = pred.float()
+        target = target.float()
+        omega = omega.float()
+        evidence_alpha = evidence_alpha.float()
+        beta = beta.float()
+
+    omega = omega.clamp_min(epsilon)
+    evidence_alpha = evidence_alpha.clamp_min(1.0 + epsilon)
+    beta = beta.clamp_min(epsilon)
+    omega_hat = 2.0 * beta * (1.0 + omega)
+
+    difference_sq = (pred - target) ** 2
+    nll = (
+        0.5 * (math.log(math.pi) - omega.log())
+        - evidence_alpha * omega_hat.log()
+        + (evidence_alpha + 0.5) * torch.log(omega * difference_sq + omega_hat + epsilon)
+    )
+    evidence_penalty = lam * (pred - target).abs() * (2.0 * omega + evidence_alpha)
+    loss = nll + evidence_penalty
+
+    if reduction == 'mean':
+        return loss.mean()
+    if reduction == 'sum':
+        return loss.sum()
+    if reduction == 'none':
+        return loss
+    raise ValueError("reduction must be 'mean', 'sum' or 'none', got {}".format(reduction))
+
+
 def SSIM(x, y):
     C1 = 0.01 ** 2
     C2 = 0.03 ** 2

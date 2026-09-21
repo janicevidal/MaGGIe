@@ -9,3 +9,4 @@ from .birefnet_pro_aux import BiRefNetProAux
 from .birefnet_binary import BiRefNetBinary
 from .focalnet_binary import FocalNetBinary
 from .focalnet_matting import FocalNetMatting
+from .focalnet_matting_nig import FocalNetMattingNIG

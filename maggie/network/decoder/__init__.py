@@ -7,3 +7,4 @@
 from .biref_decoder import biref_decoder
 from .biref_aspp_decoder import biref_aspp_decoder
 from .focal_decoder import focal_decoder, FocalDecoder
+from .focal_uncertainty_decoder import focal_uncertainty_decoder, FocalUncertaintyDecoder

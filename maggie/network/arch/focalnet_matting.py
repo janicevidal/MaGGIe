@@ -22,12 +22,15 @@ class FocalNetMatting(BiRefNetPro):
     coarse_scale_names = ('x32', 'x16')
     fine_scale_names = ('x8', 'x4', 'x2', 'x1')
     unknown_scale_names = ('x8', 'x4', 'x2')
+    # Decoders that produce the six-scale output contract above.  Subclasses
+    # extend this tuple when they add an optional decoder variant.
+    supported_decoders = ('focal_decoder', 'FocalDecoder')
 
     def __init__(self, cfg):
         super().__init__(cfg)
         decoder_name = str(cfg.decoder)
-        if decoder_name not in ('focal_decoder', 'FocalDecoder'):
-            raise ValueError('FocalNetMatting requires decoder: focal_decoder')
+        if decoder_name not in self.supported_decoders:
+            raise ValueError('FocalNetMatting requires one of {}'.format(', '.join(self.supported_decoders)))
         if cfg.decoder_args.out_ref:
             raise ValueError('FocalNetMatting requires decoder_args.out_ref=false')
         if not cfg.decoder_args.ms_supervision:

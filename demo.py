@@ -267,13 +267,12 @@ def save_prediction(alpha, image_path, alpha_path, composite_path=None,
             )
 
     if composite_path is not None:
-        composite = (
-            image_rgb.astype(np.float32) * alpha[..., None]
-            + 255.0 * (1.0 - alpha[..., None])
-        )
-        composite = np.rint(composite).clip(0, 255).astype(np.uint8)
+        # Transparent cutout: keep the original RGB and store the predicted
+        # alpha matte as the image's alpha channel.  Straight (non-premultiplied)
+        # alpha keeps the color of partially transparent pixels intact.
+        composite = np.dstack((image_rgb, alpha_image))
         composite_path.parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(composite, mode="RGB").save(composite_path)
+        Image.fromarray(composite, mode="RGBA").save(composite_path, format="PNG")
 
     if visualization_output_path is not None:
         # Match inference_image_sam3.py: [input | alpha | green composite].
@@ -311,6 +310,11 @@ def run_inference(model, data_loader, device, output_dir, do_postprocessing,
             raise KeyError("Model output contains neither 'refined_masks' nor 'alpha_pred'")
 
         alpha = reverse_prediction_transform(alpha, transform_info).cpu().numpy()
+
+        # high = 0.9
+        # low= 0.2
+        # alpha = np.clip((alpha - low) / (high - low + 1e-8), 0.0, 1.0)
+
         alpha[alpha <= 1.0 / 255.0] = 0.0
         alpha[alpha >= 254.0 / 255.0] = 1.0
         if do_postprocessing:
@@ -371,7 +375,9 @@ def parse_args():
     )
     parser.add_argument(
         "--save-composite", action="store_true",
-        help="Also composite each prediction over a white background",
+        help=(
+            "Also save each prediction as a transparent-background RGBA PNG under the composite directory"
+        ),
     )
     parser.add_argument(
         "--save-visualization", action="store_true",
@@ -449,7 +455,7 @@ def main():
     )
     logging.info("Done. Alpha mattes saved to %s", output_dir / "alpha")
     if args.save_composite:
-        logging.info("White composites saved to %s", output_dir / "composite")
+        logging.info("Transparent composites saved to %s", output_dir / "composite")
     if args.save_visualization:
         logging.info(
             "Visualizations saved to %s", output_dir / "visualization"

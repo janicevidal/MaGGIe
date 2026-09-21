@@ -211,7 +211,8 @@ class FocalDecoder(nn.Module):
             x = F.interpolate(x, size=reference.shape[-2:], mode='bilinear', align_corners=False)
         return x
 
-    def forward(self, features):
+    def decode(self, features):
+        """Run the decoder trunk and return ``(p6, p5, p4, p3, neck_feature)``."""
         if len(features) != 6:
             raise ValueError('FocalMatterDecoder expects (x1, x2, x3, x4, x5, x6)')
         
@@ -236,9 +237,18 @@ class FocalDecoder(nn.Module):
         neck_feature = F.interpolate(p3, size=x2.shape[-2:], mode='bilinear', align_corners=False)
         neck_feature = self.neck(torch.cat([neck_feature, self.stem_align(x2, x2.shape[-2:])], dim=1))
 
+        return p6, p5, p4, p3, neck_feature
+
+    def full_resolution_feature(self, neck_feature, size):
+        """Upsample the neck feature to the input resolution before the head."""
+        return F.interpolate(neck_feature, size=size, mode='bilinear', align_corners=False)
+
+    def forward(self, features):
+        p6, p5, p4, p3, neck_feature = self.decode(features)
         neck_pred = self.pred_neck(neck_feature)
-        head_feature = F.interpolate(neck_feature, size=x1.shape[-2:], mode='bilinear', align_corners=False)
-        alpha = self.alpha_head(torch.cat([head_feature, self.rgb_stem(x1)], dim=1))
+        head_feature = self.full_resolution_feature(neck_feature, features[0].shape[-2:])
+        
+        alpha = self.alpha_head(torch.cat([head_feature, self.rgb_stem(features[0])], dim=1))
 
         if self.training and self.ms_supervision:
             return [self.pred6(p6), self.pred5(p5), self.pred4(p4), self.pred3(p3), neck_pred, alpha]
@@ -247,7 +257,7 @@ class FocalDecoder(nn.Module):
             # prediction is at input resolution. Upsample the x2 neck head
             # here so its IoU is measured after the same interpolation that a
             # deployment pipeline would apply, without changing training.
-            neck_pred = F.interpolate(neck_pred, size=x1.shape[-2:], mode='bilinear', align_corners=False)
+            neck_pred = F.interpolate(neck_pred, size=features[0].shape[-2:], mode='bilinear', align_corners=False)
             return [neck_pred]
         return [alpha]
 

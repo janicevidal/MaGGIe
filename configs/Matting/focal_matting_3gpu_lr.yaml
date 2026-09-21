@@ -3,30 +3,30 @@
 dataset:
   test:
     name: Matting
-    root_dir: /data/zhangxiaoshuai/Segmentation/_val_matting/
+    root_dir: /data/xiaoshuai/human_matting/dichotomous_dataset/_val_matting/
     short_size: 512
     alpha_dir_name: alphas
   train:
     name: Matting
     root_dir: ''
     root_dirs:
-      - /data/zhangxiaoshuai/Segmentation/_train/image/p3m/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/matting/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/ppr/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/sip/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/supervisely/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/tstars/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/rendermatte/human_art/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/come_non_person/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/hpm17k/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/cihp/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/come/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part1/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/fhibe_part2/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part1/
-      - /data/zhangxiaoshuai/Segmentation/_train/image/ochuman_part2/
-      - /data/zhangxiaoshuai/Segmentation/_train/video/tianchi/
-      - /data/zhangxiaoshuai/Segmentation/_train/video/video_matting/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/p3m/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/matting/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/rendermatte/ppr/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/rendermatte/sip/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/rendermatte/supervisely/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/rendermatte/tstars/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/rendermatte/human_art/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/come_non_person/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/hpm17k/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/cihp/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/come/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/fhibe_part1/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/fhibe_part2/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/ochuman_part1/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/image/ochuman_part2/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/video/tianchi/
+      - /data/xiaoshuai/human_matting/dichotomous_dataset/_train/video/video_matting/
     root_sampling_rates: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.1, 0.1]
     crop: [512, 512]
     flip_p: 0.5
@@ -40,9 +40,7 @@ dataset:
 model:
   arch: FocalNetMatting
   # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/focal_dis_3gpu_sod_host50/model_iter199500.pth
-  # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter103000.pth
-  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter110500.pth
-  # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter149000.pth
+  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_lr/model_iter113000.pth
   sync_bn: true
   having_unused_params: false
   encoder: star_matting
@@ -96,7 +94,7 @@ model:
   loss_alpha_lapun_w: 0.3
   use_ddc_loss: false
 
-name: focal_matting_3gpu_host50
+name: focal_matting_3gpu_lr
 output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting
 test:
   batch_size: 1
@@ -104,7 +102,7 @@ test:
   metrics: [MAD, MSE, SAD, Grad]
   num_workers: 4
   postprocessing: false
-  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/focal_matting_predictions
+  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/focal_matting_lr_predictions
   save_results: true
 train:
   batch_size: 64
@@ -113,14 +111,14 @@ train:
   num_workers: 16
   optimizer:
     betas: [0.9, 0.999]
-    lr: 0.0001
+    lr: 0.0005
     momentum: 0.9
     name: adamw
     weight_decay: 0.01
   gradient_clipping:
     enabled: false
-  resume: ''
-  resume_last: false
+  resume: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_lr/
+  resume_last: true
   scheduler:
     name: warmup_decay_multi
     warmup_iters: 1000
