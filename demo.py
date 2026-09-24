@@ -311,12 +311,20 @@ def run_inference(model, data_loader, device, output_dir, do_postprocessing,
 
         alpha = reverse_prediction_transform(alpha, transform_info).cpu().numpy()
 
+        # alpha[alpha <= 1.0 / 255.0] = 0.0
+        # alpha[alpha >= 254.0 / 255.0] = 1.0
+        
+        # matting postprocess
+        high = 0.9
+        low= 0.23
+        alpha = np.clip((alpha - low) / (high - low + 1e-8), 0.0, 1.0)
+        
+        # clothing postprocess
+        # alpha[alpha <= 50.0 / 255.0] = 0.0
         # high = 0.9
-        # low= 0.2
+        # low= 0
         # alpha = np.clip((alpha - low) / (high - low + 1e-8), 0.0, 1.0)
-
-        alpha[alpha <= 1.0 / 255.0] = 0.0
-        alpha[alpha >= 254.0 / 255.0] = 1.0
+        
         if do_postprocessing:
             alpha = postprocess(alpha)
 

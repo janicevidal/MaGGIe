@@ -1,0 +1,121 @@
+# Binary segmentation training with StarMatting + FocalDecoder.
+# FocalDecoder outputs: x32/x16/x8 (coarse) and x4/x2/x1 (fine).
+dataset:
+  test:
+    name: BinarySegmentation
+    root_dir: /data/local3/Segmentation/hair/_val/
+    short_size: 512
+    mask_dir_name: masks
+    mask_threshold: 127
+  train:
+    name: BinarySegmentation
+    root_dir: ''
+    root_dirs:
+      - /data/local3/Segmentation/hair/_train/fhibe/
+      - /data/local3/Segmentation/hair/_train/figaro/
+      - /data/local3/Segmentation/hair/_train/hairstep/
+      - /data/local3/Segmentation/hair/_train/lapa/
+      - /data/local3/Segmentation/hair/_train/meitu/
+      - /data/local3/Segmentation/hair/_train/shhq/
+      - /data/local3/Segmentation/hair/_train/sketchhair/
+      - /data/local3/Segmentation/hair/_train/shhq_whole/
+    root_sampling_rates: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.05]
+    crop: [512, 512]
+    flip_p: 0.5
+    gamma_p: 0.5
+    add_noise_p: 0.3
+    jpeg_p: 0.1
+    affine_p: 0.8
+    mask_dir_name: masks
+    mask_threshold: 127
+
+model:
+  arch: FocalNetBinary
+  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/dis/focal_dis_3gpu_sod_host50/model_iter199500.pth
+  sync_bn: false
+  having_unused_params: false
+  encoder: star_matting
+  encoder_args:
+    embed_dims: 16
+    num_layers: [1, 3, 6, 1]
+    prm_ratio: [1, 2, 2, 2]
+    dr_ratio: [1, 2, 2, 4]
+    structure: 'TE'
+    mul_scl_ipt: false
+    include_stem_out: true
+  decoder: focal_decoder
+  decoder_args:
+    # [x1 RGB, x2 stem, x3 stage1, x4 stage2, x5 stage3, x6 stage4]
+    in_channels: [3, 16, 16, 32, 80, 128]
+    out_channels: [96, 72, 48, 24]
+    refine_depths: [1, 1, 1, 1]
+    num_heads: [8, 6, 4, 2]
+    # Deep-to-shallow EMLLA q/k reduction; keeps q/k head width valid.
+    dr_ratios: [2, 2, 2, 1]
+    mlp_ratios: [2, 2, 2, 4]
+    neck_channels: 32
+    rgb_channels: 8
+    ms_supervision: true
+    out_ref: false
+    binary_loss:
+      target_threshold: 0.5
+      loss_weight: 1.0
+      # BCE + Dice only at x32/x16/x8.
+      scale_weights: [0.125, 0.25, 0.5]
+      coarse_bce_weight: 2.0
+      coarse_dice_weight: 4.0
+      # Hybrid-E at full resolution for x4/x2/x1.
+      fine_scale_weights: [0.5, 0.8, 1.0]
+      hybrid_e_weight: 0.3
+      hybrid_e_kernel_size: 31
+      hybrid_e_boundary_factor: 5.0
+      final_ssim_weight: 4.0
+      focal_enabled: true
+      focal_weight: 6.0
+      focal_gamma: 1.5
+      focal_alpha: 0.5
+      hard_negative_enabled: false
+      hard_negative_weight: 0.0
+
+name: focal_hair_1gpu_host-h20
+output_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/hair/
+test:
+  batch_size: 1
+  log_iter: 200
+  metrics: [IoU, Dice, F1Score, Precision, Recall, Specificity, BalancedAccuracy, BER, mIoU, MAE, BIoU]
+  num_workers: 4
+  postprocessing: false
+  save_dir: /home/zhangxiaoshuai/Checkpoint/HumanMatting/results/focal_hair_predictions
+  save_results: true
+train:
+  batch_size: 160
+  log_iter: 50
+  max_iter: 260000
+  num_workers: 16
+  optimizer:
+    betas: [0.9, 0.999]
+    lr: 0.001
+    momentum: 0.9
+    name: adamw
+    weight_decay: 0.01
+  gradient_clipping:
+    enabled: false
+  resume: ''
+  resume_last: false
+  scheduler:
+    name: warmup_decay_multi
+    warmup_iters: 500
+    warmup_factor: 0.001
+    delay_iters: 50000
+    decay_steps: [150000, 210000, 260000]
+    peak_scale: 0.5
+    eta_min: 0.00001
+  seed: 1234
+  val_best_metric: IoU
+  val_dist: true
+  val_iter: 500
+  val_metrics: [IoU, Precision, Recall, MAE]
+  vis_iter: 500
+tensorboard:
+  use: true
+  log_dir: tensorboard
