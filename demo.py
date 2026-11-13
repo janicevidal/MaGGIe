@@ -157,6 +157,27 @@ class FixedSizeImageFolderDataset(ImageFolderDataset):
         return image, transform_info
 
 
+class StretchImageFolderDataset(ImageFolderDataset):
+    """Stretch images to a square without preserving aspect ratio or padding."""
+
+    def preprocess(self, image):
+        ori_h, ori_w = image.shape[:2]
+        image = cv2.resize(
+            image,
+            (self.short_size, self.short_size),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        transform_info = [{"name": "resize", "ori_size": (ori_h, ori_w)}]
+        return image, transform_info
+
+
+RESIZE_MODE_DATASETS = {
+    "short-side": ImageFolderDataset,
+    "fixed": FixedSizeImageFolderDataset,
+    "stretch": StretchImageFolderDataset,
+}
+
+
 def _metadata_value(value):
     """Read a scalar produced either directly or by DataLoader collation."""
     if isinstance(value, torch.Tensor):
@@ -366,11 +387,13 @@ def parse_args():
     )
     parser.add_argument(
         "--resize-mode",
-        choices=("short-side", "fixed"),
+        choices=tuple(RESIZE_MODE_DATASETS),
         default="short-side",
         help=(
             "short-side keeps the original test preprocessing; fixed fits the "
-            "image into a short-size x short-size canvas with centered zero padding"
+            "image into a short-size x short-size canvas with centered zero padding; "
+            "stretch forces the image to short-size x short-size without preserving "
+            "aspect ratio or adding padding"
         ),
     )
     parser.add_argument(
@@ -426,11 +449,7 @@ def main():
 
     device = resolve_device(args.device)
     output_dir = Path(args.output_dir).expanduser().resolve()
-    dataset_class = (
-        FixedSizeImageFolderDataset
-        if args.resize_mode == "fixed"
-        else ImageFolderDataset
-    )
+    dataset_class = RESIZE_MODE_DATASETS[args.resize_mode]
     dataset = dataset_class(
         args.input_dir,
         short_size=short_size,

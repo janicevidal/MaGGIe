@@ -39,9 +39,9 @@ dataset:
 
 model:
   arch: FocalNetMatting
-  # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/focal_dis_3gpu_sod_host50/model_iter199500.pth
+  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/dis/focal_dis_3gpu_sod_host50/model_iter199500.pth
   # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter103000.pth
-  weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter110500.pth
+  # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter110500.pth
   # weights: /home/zhangxiaoshuai/Checkpoint/HumanMatting/checkpoints/matting/focal_matting_3gpu_host50/model_iter149000.pth
   sync_bn: true
   having_unused_params: false

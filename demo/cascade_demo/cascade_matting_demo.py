@@ -64,8 +64,7 @@ except (ImportError, SystemExit) as exc:  # onnxruntime 缺失时给出可读的
 
 from demo import (  # noqa: E402  demo.py 中的训练模型推理链路
     CHROMA_GREEN_RGB,
-    FixedSizeImageFolderDataset,
-    ImageFolderDataset,
+    RESIZE_MODE_DATASETS,
     load_model,
     resolve_device,
     reverse_prediction_transform,
@@ -88,8 +87,12 @@ def parse_args(argv=None):
         help="覆盖 dataset.test.short_size",
     )
     parser.add_argument(
-        "--resize-mode", choices=("short-side", "fixed"), default="short-side",
-        help="与 demo.py 一致：short-side 保持训练时预处理，fixed 居中填充成方图",
+        "--resize-mode", choices=tuple(RESIZE_MODE_DATASETS), default="short-side",
+        help=(
+            "与 demo.py 一致：short-side 保持训练时预处理，fixed 居中填充成方图，"
+            "stretch 强制拉伸到 short-size x short-size，不保持宽高比且不填充；"
+            "仅影响阶段 1，阶段 2 ONNX 仍使用 letterbox"
+        ),
     )
     parser.add_argument("--device", default="auto", help="训练模型推理设备，如 cuda:0 / cpu")
     parser.add_argument("--num-workers", type=int, default=0)
@@ -283,9 +286,7 @@ def run(args):
     else:
         do_postprocessing = cfg.test.postprocessing
 
-    dataset_class = (
-        FixedSizeImageFolderDataset if args.resize_mode == "fixed" else ImageFolderDataset
-    )
+    dataset_class = RESIZE_MODE_DATASETS[args.resize_mode]
     dataset = dataset_class(
         args.input_dir,
         short_size=short_size,
